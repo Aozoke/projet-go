@@ -1,0 +1,15 @@
+# Go
+/bin/
+/build/
+*.test
+coverage.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# GoLand / IntelliJ
+.idea/
+
+# System
+.DS_Store
