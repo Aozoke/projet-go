@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -40,6 +41,10 @@ func ParseCommand(input string) (Command, error) {
 	parts := strings.Fields(strings.TrimSpace(input))
 	//On récupère le premier mot de la commande.
 	commandName := ReadCommandName(input)
+
+	if len(parts) < 2 {
+		return Command{}, fmt.Errorf("missing key")
+	}
 
 	return Command{
 		Type: CommandType(commandName),

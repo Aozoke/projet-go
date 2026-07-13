@@ -46,7 +46,7 @@ func TestReadCommandNameUppercaseCommand(t *testing.T) {
 // On appelle une future fonction ParseCommand. renvoie comand +err
 func TestParseGetCommand(t *testing.T) {
 	command, err := ParseCommand("GET name")
-	t.Logf("%+v", command)
+	//t.Logf("%+v", command) <- pour avoir le tests en command
 
 	if err != nil {
 		t.Fatal(err)
@@ -60,5 +60,13 @@ func TestParseGetCommand(t *testing.T) {
 
 	if command.Key != "name" {
 		t.Fatalf("expected key name, got %s", command.Key)
+	}
+}
+
+func TestParseGetCommandWithoutKey(t *testing.T) {
+	_, err := ParseCommand("GET")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
