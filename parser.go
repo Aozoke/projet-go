@@ -1,6 +1,8 @@
 package main
 
-import "strings"
+import (
+	"strings"
+)
 
 // on crée une fonction appelé ReadCommandName qui reçoit string et renvois string
 func ReadCommandName(input string) string {
@@ -16,5 +18,31 @@ func ReadCommandName(input string) string {
 
 	return strings.ToUpper(parts[0])
 	//transforme une string en majuscules.
+	//return parts[0]
+	/*
+		Sinon, on renvoie le premier morceau.
+		Donc "GET" pour "GET name".
+	*/
 
+}
+
+/*
+Command : notre struct de commande
+error : une erreur si la commande est invalide
+Command{} : une commande vide
+nil : aucune erreur
+
+ourquoi CommandType(...) ?
+Parce que commandName est une string, alors que Type attend un CommandType
+*/
+func ParseCommand(input string) (Command, error) {
+	//On nettoie les espaces, puis on découpe.
+	parts := strings.Fields(strings.TrimSpace(input))
+	//On récupère le premier mot de la commande.
+	commandName := ReadCommandName(input)
+
+	return Command{
+		Type: CommandType(commandName),
+		Key:  parts[1],
+	}, nil
 }

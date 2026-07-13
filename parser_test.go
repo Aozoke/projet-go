@@ -42,3 +42,23 @@ func TestReadCommandNameUppercaseCommand(t *testing.T) {
 		t.Fatalf("expected GET, got %s", result)
 	}
 }
+
+// On appelle une future fonction ParseCommand. renvoie comand +err
+func TestParseGetCommand(t *testing.T) {
+	command, err := ParseCommand("GET name")
+	t.Logf("%+v", command)
+
+	if err != nil {
+		t.Fatal(err)
+		//si err alors que get name valide, test echoue
+	}
+
+	//On vérifie que le type est bien GET.
+	if command.Type != CommandGet {
+		t.Fatalf("expected command type GET, got %s", command.Type)
+	}
+
+	if command.Key != "name" {
+		t.Fatalf("expected key name, got %s", command.Key)
+	}
+}
