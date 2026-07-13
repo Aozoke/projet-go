@@ -32,3 +32,13 @@ func TestReadCommandNameWithEmptyInput(t *testing.T) {
 		t.Fatalf("expected empty command name, got %s", result)
 	}
 }
+
+func TestReadCommandNameUppercaseCommand(t *testing.T) {
+	//On teste une commande écrite en minuscules.
+	result := ReadCommandName("get name")
+
+	if result != "GET" {
+		//On veut que notre parser normalise en majuscules.
+		t.Fatalf("expected GET, got %s", result)
+	}
+}

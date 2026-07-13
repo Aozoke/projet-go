@@ -14,7 +14,7 @@ func ReadCommandName(input string) string {
 	}
 	//Si la liste est vide, ça veut dire que l’utilisateur n’a rien écrit.Dans ce cas, on renvoie une string vide.
 
-	return parts[0]
-	//Sinon, on renvoie le premier morceau.
+	return strings.ToUpper(parts[0])
+	//transforme une string en majuscules.
 
 }
