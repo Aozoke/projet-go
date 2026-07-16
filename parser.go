@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-// on crée une fonction appelé ReadCommandName qui reçoit string et renvois string
+// La première fonction s’appelle ReadCommandName.
+// Elle sert juste à récupérer le premier mot de la commande.
+
+// on crée une fonction appelé ReadCommandName qui reçoit string et renvois string ( fun nom paramatre type, type de retour)
 func ReadCommandName(input string) string {
 	trimmed := strings.TrimSpace(input)
 	//Supprime les espaces inutiles au début et à la fin.
@@ -35,12 +38,28 @@ nil : aucune erreur
 
 ourquoi CommandType(...) ?
 Parce que commandName est une string, alors que Type attend un CommandType
+
+	elle prend toute la commande texte et essaie de construire une vraie commande Go.
 */
 func ParseCommand(input string) (Command, error) {
 	//On nettoie les espaces, puis on découpe.
 	parts := strings.Fields(strings.TrimSpace(input))
-	//On récupère le premier mot de la commande.
+	//On récupère le premier mot de la commande
 	commandName := ReadCommandName(input)
+
+	/*
+		ParseCommand ne sait parser que GET.
+		Donc si la commande n’est pas GET, on refuse.
+	*/
+	// if commandName != string(CommandGet) {
+	// 	return Command{}, fmt.Errorf("unknown command")
+	// 	//Si la commande n’est pas GET, je renvoie une erreur.
+	// }
+	//on le remplace par :
+
+	if commandName != string(CommandGet) && commandName != string(CommandDelete) {
+		return Command{}, fmt.Errorf("unknown command")
+	}
 
 	if len(parts) < 2 {
 		return Command{}, fmt.Errorf("missing key")

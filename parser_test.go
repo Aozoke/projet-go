@@ -64,9 +64,39 @@ func TestParseGetCommand(t *testing.T) {
 }
 
 func TestParseGetCommandWithoutKey(t *testing.T) {
+	//on ignore la commande avec _. parce que dans ce cas on veut juste l'erreur
 	_, err := ParseCommand("GET")
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// refuser les commandes inconues
+// test pour une commande inconnue
+func TestParseUnknownCommand(t *testing.T) {
+	//On appelle le parser avec PING name
+	_, err := ParseCommand("PING name")
+
+	//Si err est nil = le parser a accepté la commande
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	//et c'est pas bon donc fail
+}
+
+func TestParseDeleteCommand(t *testing.T) {
+	command, err := ParseCommand("DELETE name")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if command.Type != CommandDelete {
+		t.Fatalf("expected command type DELETE, got %s", command.Type)
+	}
+
+	if command.Key != "name" {
+		t.Fatalf("expected key name, got %s", command.Key)
 	}
 }
