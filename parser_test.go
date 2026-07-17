@@ -165,3 +165,11 @@ func TestParseSetCommandWithoutQuotes(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestParseEmptyCommand(t *testing.T) {
+	_, err := ParseCommand("   ")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
