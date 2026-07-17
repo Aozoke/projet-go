@@ -157,3 +157,11 @@ func TestParseSetCommandWithSpacesInValue(t *testing.T) {
 		t.Fatalf("expected value hello world, got %s", command.Value)
 	}
 }
+
+func TestParseSetCommandWithoutQuotes(t *testing.T) {
+	_, err := ParseCommand("SET name matt")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}

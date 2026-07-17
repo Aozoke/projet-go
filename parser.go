@@ -78,9 +78,17 @@ func ParseCommand(input string) (Command, error) {
 		}
 
 		/*
-			strings.Trim enlève certains caractères au début et à la fin d’une string.
+				strings.Trim enlève certains caractères au début et à la fin d’une string.
+			 Join me sert à recoller les morceaux de la valeur quand elle contient
+			 des espaces.
+			 Ensuite Trim enlève les guillemets autour.
+
 		*/
 		rawValue := strings.Join(parts[2:], " ")
+		//Vérifie si rawValue commence par un guillemet.
+		if !strings.HasPrefix(rawValue, `"`) || !strings.HasSuffix(rawValue, `"`) {
+			return Command{}, fmt.Errorf("value must be quoted")
+		}
 		value = strings.Trim(rawValue, `"`)
 	}
 
