@@ -86,17 +86,33 @@ func TestParseUnknownCommand(t *testing.T) {
 }
 
 func TestParseDeleteCommand(t *testing.T) {
+	//On demande au parser de lire la commande
 	command, err := ParseCommand("DELETE name")
 
+	//si err n'est pas vide
 	if err != nil {
+		//si ee le test s'arrete tout de suite diff fatalf et fatal fatalf a un msgg formater
 		t.Fatal(err)
 	}
 
 	if command.Type != CommandDelete {
+		//si le type est bien delete
+		//on affiche une string, si renvoie get au lieu de delete, le message affiche ce qu'il recoi
 		t.Fatalf("expected command type DELETE, got %s", command.Type)
 	}
 
 	if command.Key != "name" {
+		//on verifie que la cle et bien name
+		//si clef mauvaise, le test echoue avec un message clair
 		t.Fatalf("expected key name, got %s", command.Key)
+	}
+}
+
+func TestParseDeleteCommandWithoutKey(t *testing.T) {
+	// _ = ignore la valeur  parce que parser renvoie command et err et dans le test on veux vérifier que l'err
+	_, err := ParseCommand("DELETE")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
