@@ -57,16 +57,32 @@ func ParseCommand(input string) (Command, error) {
 	// }
 	//on le remplace par :
 
-	if commandName != string(CommandGet) && commandName != string(CommandDelete) {
+	//si la commande n’est pas GET ET n’est pas DELETE.
+	// if commandName != string(CommandGet) && commandName != string(CommandDelete) {
+	// 	return Command{}, fmt.Errorf("unknown command")
+	// }
+
+	if commandName != string(CommandGet) && commandName != string(CommandDelete) && commandName != string(CommandSet) {
 		return Command{}, fmt.Errorf("unknown command")
 	}
 
 	if len(parts) < 2 {
+		// est ce que la list parts contient moins de  2 elements
 		return Command{}, fmt.Errorf("missing key")
 	}
 
+	//on verifie que la commande est connue, puis au moins  1 clé, aprés on prépare la veleur et on construit la command
+	value := ""
+	if commandName == string(CommandSet) {
+		/*
+			strings.Trim enlève certains caractères au début et à la fin d’une string.
+		*/
+		value = strings.Trim(parts[2], `"`)
+	}
+
 	return Command{
-		Type: CommandType(commandName),
-		Key:  parts[1],
+		Type:  CommandType(commandName),
+		Key:   parts[1],
+		Value: value,
 	}, nil
 }

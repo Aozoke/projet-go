@@ -116,3 +116,23 @@ func TestParseDeleteCommandWithoutKey(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestParseSetCommand(t *testing.T) {
+	command, err := ParseCommand(`SET name "matt"`)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if command.Type != CommandSet {
+		t.Fatalf("expected command type SET, got %s", command.Type)
+	}
+
+	if command.Key != "name" {
+		t.Fatalf("expected key name, got %s", command.Key)
+	}
+
+	if command.Value != "matt" {
+		t.Fatalf("expected value matt, got %s", command.Value)
+	}
+}
