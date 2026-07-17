@@ -136,3 +136,12 @@ func TestParseSetCommand(t *testing.T) {
 		t.Fatalf("expected value matt, got %s", command.Value)
 	}
 }
+
+// test pour SET sans valeur
+func TestParseSetCommandWithoutValue(t *testing.T) {
+	_, err := ParseCommand("SET name")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}

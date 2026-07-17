@@ -6,8 +6,8 @@ Le projet final devra tourner dans le navigateur avec un moteur ecrit en Go,
 compile en WebAssembly, persiste via OPFS, pilote par un SDK TypeScript et
 visualise dans une UI React.
 
-Pour avancer sans se perdre, on construit d'abord le moteur Go en natif avec des
-tests. Le portage WASM, le worker, le SDK et React viendront seulement apres.
+Pour avancer sans se perdre, on construit d'abord le moteur Go en natif avec des tests. 
+Le portage WASM, le worker, le SDK et React viendront seulement apres.
 
 ## Etape actuelle
 
@@ -25,7 +25,7 @@ Ce qui existe maintenant :
 1. Parser les commandes texte : `SET`, `GET`, `DELETE`.
 2. Creer le moteur en memoire : une map `cle -> valeur`.
 3. Brancher parser + moteur avec des tests.
-4. Ajouter la persistance : AOF, snapshot, restore.
+4. Ajouter la persistance : AOF, snapshot,de restore.
 5. Ajouter les batches.
 6. Ajouter les filtres et les index.
 7. Ajouter le TTL.

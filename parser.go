@@ -71,9 +71,12 @@ func ParseCommand(input string) (Command, error) {
 		return Command{}, fmt.Errorf("missing key")
 	}
 
-	//on verifie que la commande est connue, puis au moins  1 clé, aprés on prépare la veleur et on construit la command
 	value := ""
 	if commandName == string(CommandSet) {
+		if len(parts) < 3 {
+			return Command{}, fmt.Errorf("missing value")
+		}
+
 		/*
 			strings.Trim enlève certains caractères au début et à la fin d’une string.
 		*/
