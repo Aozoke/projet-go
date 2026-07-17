@@ -16,6 +16,10 @@ func NewEngine() *Engine {
 	}
 }
 
+func (engine *Engine) Set(key string, value string) {
+	engine.state[key] = value
+}
+
 //NewEngine crée un moteur prêt à l’emploi.
 // Il contient un state,
 //  c’est-à-dire une map en mémoire où les clés et les valeurs sont des strings.
