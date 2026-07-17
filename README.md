@@ -11,7 +11,7 @@ Le portage WASM, le worker, le SDK et React viendront seulement apres.
 
 ## Etape actuelle
 
-Phase 0 : initialisation du projet Go.
+Phase 1.1 : parser simple termine.
 
 Ce qui existe maintenant :
 
@@ -19,19 +19,51 @@ Ce qui existe maintenant :
 - un point d'entree minimal : `main.go`
 - la dependance `github.com/samber/lo`
 - un fichier `.env.example` qui liste les constantes configurables prevues
+- un parser de commandes texte pour `GET`, `DELETE` et `SET`
+- des tests pour verifier le parser et les erreurs simples
 
-## Roadmap simple
+## Ce que le parser sait faire
+
+Commandes valides :
+
+```text
+GET name
+DELETE name
+SET name "matt"
+SET message "hello world"
+```
+
+Erreurs gerees :
+
+- commande inconnue, exemple `PING name`
+- cle manquante, exemple `GET` ou `DELETE`
+- valeur manquante, exemple `SET name`
+- valeur de `SET` sans guillemets, exemple `SET name matt`
+
+## Roadmap courte
 
 1. Parser les commandes texte : `SET`, `GET`, `DELETE`.
 2. Creer le moteur en memoire : une map `cle -> valeur`.
 3. Brancher parser + moteur avec des tests.
-4. Ajouter la persistance : AOF, snapshot,de restore.
+4. Ajouter la persistance : AOF, snapshot, restore.
 5. Ajouter les batches.
 6. Ajouter les filtres et les index.
 7. Ajouter le TTL.
 8. Compiler en WASM et deplacer le moteur dans un Web Worker.
 9. Creer le SDK TypeScript.
 10. Creer l'UI React avec virtual scroll.
+
+## Prochaine etape
+
+Creer le moteur en memoire.
+
+Objectif simple :
+
+```text
+SET name "matt"  -> ecrit name = matt
+GET name         -> lit matt
+DELETE name      -> supprime name
+```
 
 ## Commandes utiles
 

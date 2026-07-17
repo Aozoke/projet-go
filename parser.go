@@ -5,90 +5,53 @@ import (
 	"strings"
 )
 
-// La première fonction s’appelle ReadCommandName.
-// Elle sert juste à récupérer le premier mot de la commande.
-
-// on crée une fonction appelé ReadCommandName qui reçoit string et renvois string ( fun nom paramatre type, type de retour)
+// ReadCommandName lit le nom de la commande.
+// Exemple : "get name" devient "GET".
 func ReadCommandName(input string) string {
-	trimmed := strings.TrimSpace(input)
-	//Supprime les espaces inutiles au début et à la fin.
-	parts := strings.Fields(trimmed)
-	//Découpe le texte en morceaux séparés par les espaces.
+	trimmed := strings.TrimSpace(input) //Ça enlève les espaces au début et à la fin.
+	parts := strings.Fields(trimmed)    //Ça découpe la string en morceaux séparés par les espaces.
 
 	if len(parts) == 0 {
 		return ""
 	}
-	//Si la liste est vide, ça veut dire que l’utilisateur n’a rien écrit.Dans ce cas, on renvoie une string vide.
 
 	return strings.ToUpper(parts[0])
-	//transforme une string en majuscules.
-	//return parts[0]
-	/*
-		Sinon, on renvoie le premier morceau.
-		Donc "GET" pour "GET name".
-	*/
-
 }
 
-/*
-Command : notre struct de commande
-error : une erreur si la commande est invalide
-Command{} : une commande vide
-nil : aucune erreur
-
-ourquoi CommandType(...) ?
-Parce que commandName est une string, alors que Type attend un CommandType
-
-	elle prend toute la commande texte et essaie de construire une vraie commande Go.
-*/
+// ParseCommand transforme une commande texte en Command.
+// Si la commande est invalide, elle renvoie une erreur.
 func ParseCommand(input string) (Command, error) {
-	//On nettoie les espaces, puis on découpe.
+	// parts contient les morceaux de la commande.
+	// Exemple : `SET name "matt"` devient ["SET", "name", "\"matt\""].
 	parts := strings.Fields(strings.TrimSpace(input))
-	//On récupère le premier mot de la commande
 	commandName := ReadCommandName(input)
 
-	/*
-		ParseCommand ne sait parser que GET.
-		Donc si la commande n’est pas GET, on refuse.
-	*/
-	// if commandName != string(CommandGet) {
-	// 	return Command{}, fmt.Errorf("unknown command")
-	// 	//Si la commande n’est pas GET, je renvoie une erreur.
-	// }
-	//on le remplace par :
-
-	//si la commande n’est pas GET ET n’est pas DELETE.
-	// if commandName != string(CommandGet) && commandName != string(CommandDelete) {
-	// 	return Command{}, fmt.Errorf("unknown command")
-	// }
-
+	//Si commandName n’est pas GET, et n’est pas DELETE, et n’est pas SET, alors la commande est inconnue.
 	if commandName != string(CommandGet) && commandName != string(CommandDelete) && commandName != string(CommandSet) {
 		return Command{}, fmt.Errorf("unknown command")
 	}
 
+	// GET, DELETE et SET ont tous besoin d'une clé.
 	if len(parts) < 2 {
-		// est ce que la list parts contient moins de  2 elements
 		return Command{}, fmt.Errorf("missing key")
 	}
 
 	value := ""
 	if commandName == string(CommandSet) {
+		// SET a besoin d'un troisième morceau : la valeur.
 		if len(parts) < 3 {
 			return Command{}, fmt.Errorf("missing value")
 		}
 
-		/*
-				strings.Trim enlève certains caractères au début et à la fin d’une string.
-			 Join me sert à recoller les morceaux de la valeur quand elle contient
-			 des espaces.
-			 Ensuite Trim enlève les guillemets autour.
-
-		*/
+		// On recolle tout ce qui vient après la clé pour garder les espaces.
 		rawValue := strings.Join(parts[2:], " ")
-		//Vérifie si rawValue commence par un guillemet.
+
+		// Dans notre syntaxe, la valeur d'un SET doit être entre guillemets.
 		if !strings.HasPrefix(rawValue, `"`) || !strings.HasSuffix(rawValue, `"`) {
 			return Command{}, fmt.Errorf("value must be quoted")
 		}
+
+		// On stocke la valeur sans les guillemets autour.
 		value = strings.Trim(rawValue, `"`)
 	}
 
