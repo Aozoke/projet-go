@@ -80,7 +80,8 @@ func ParseCommand(input string) (Command, error) {
 		/*
 			strings.Trim enlève certains caractères au début et à la fin d’une string.
 		*/
-		value = strings.Trim(parts[2], `"`)
+		rawValue := strings.Join(parts[2:], " ")
+		value = strings.Trim(rawValue, `"`)
 	}
 
 	return Command{
