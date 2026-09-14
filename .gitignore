@@ -3,10 +3,19 @@
 /build/
 *.test
 coverage.out
+web/public/wasmredis.wasm
+web/public/wasm_exec.js
 
 # Go workspace
 go.work
 go.work.sum
+
+# Frontend
+web/node_modules/
+web/node_modules.windows-broken.*/
+web/dist/
+web/*.tsbuildinfo
+.venv-presentation/
 
 # GoLand / IntelliJ
 .idea/

@@ -1,8 +1,7 @@
-package main
+package redis
 
 import "testing"
 
-// Vérifie qu'on récupère le premier mot d'une commande.
 func TestReadCommandName(t *testing.T) {
 	result := ReadCommandName("GET name")
 
@@ -11,7 +10,6 @@ func TestReadCommandName(t *testing.T) {
 	}
 }
 
-// Vérifie que les espaces autour de la commande ne changent rien.
 func TestReadCommandNameTrimsSpaces(t *testing.T) {
 	result := ReadCommandName("   GET name   ")
 
@@ -20,7 +18,6 @@ func TestReadCommandNameTrimsSpaces(t *testing.T) {
 	}
 }
 
-// Vérifie qu'une commande vide ne fait pas crasher ReadCommandName.
 func TestReadCommandNameWithEmptyInput(t *testing.T) {
 	result := ReadCommandName("")
 
@@ -29,7 +26,6 @@ func TestReadCommandNameWithEmptyInput(t *testing.T) {
 	}
 }
 
-// Vérifie qu'une commande écrite en minuscules est normalisée en majuscules.
 func TestReadCommandNameUppercaseCommand(t *testing.T) {
 	result := ReadCommandName("get name")
 
@@ -38,7 +34,6 @@ func TestReadCommandNameUppercaseCommand(t *testing.T) {
 	}
 }
 
-// Vérifie que GET construit une Command avec un type et une clé.
 func TestParseGetCommand(t *testing.T) {
 	command, err := ParseCommand("GET name")
 
@@ -55,7 +50,6 @@ func TestParseGetCommand(t *testing.T) {
 	}
 }
 
-// Vérifie que GET sans clé renvoie une erreur propre.
 func TestParseGetCommandWithoutKey(t *testing.T) {
 	_, err := ParseCommand("GET")
 
@@ -64,7 +58,6 @@ func TestParseGetCommandWithoutKey(t *testing.T) {
 	}
 }
 
-// Vérifie qu'une commande inconnue est refusée.
 func TestParseUnknownCommand(t *testing.T) {
 	_, err := ParseCommand("PING name")
 
@@ -73,7 +66,6 @@ func TestParseUnknownCommand(t *testing.T) {
 	}
 }
 
-// Vérifie que DELETE construit une Command avec un type et une clé.
 func TestParseDeleteCommand(t *testing.T) {
 	command, err := ParseCommand("DELETE name")
 
@@ -90,7 +82,6 @@ func TestParseDeleteCommand(t *testing.T) {
 	}
 }
 
-// Vérifie que DELETE sans clé renvoie une erreur propre.
 func TestParseDeleteCommandWithoutKey(t *testing.T) {
 	_, err := ParseCommand("DELETE")
 
@@ -99,7 +90,6 @@ func TestParseDeleteCommandWithoutKey(t *testing.T) {
 	}
 }
 
-// Vérifie que SET construit une Command avec un type, une clé et une valeur.
 func TestParseSetCommand(t *testing.T) {
 	command, err := ParseCommand(`SET name "matt"`)
 
@@ -120,7 +110,6 @@ func TestParseSetCommand(t *testing.T) {
 	}
 }
 
-// Vérifie que SET sans valeur renvoie une erreur propre.
 func TestParseSetCommandWithoutValue(t *testing.T) {
 	_, err := ParseCommand("SET name")
 
@@ -129,7 +118,6 @@ func TestParseSetCommandWithoutValue(t *testing.T) {
 	}
 }
 
-// Vérifie que SET accepte une valeur contenant des espaces.
 func TestParseSetCommandWithSpacesInValue(t *testing.T) {
 	command, err := ParseCommand(`SET message "hello world"`)
 
@@ -142,7 +130,6 @@ func TestParseSetCommandWithSpacesInValue(t *testing.T) {
 	}
 }
 
-// Vérifie que la valeur de SET doit être entre guillemets.
 func TestParseSetCommandWithoutQuotes(t *testing.T) {
 	_, err := ParseCommand("SET name matt")
 
@@ -151,10 +138,53 @@ func TestParseSetCommandWithoutQuotes(t *testing.T) {
 	}
 }
 
-// Vérifie qu'une commande vide renvoie une erreur.
+func TestParseAllCommand(t *testing.T) {
+	command, err := ParseCommand("ALL")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if command.Type != CommandAll {
+		t.Fatalf("expected command type ALL, got %s", command.Type)
+	}
+}
+
 func TestParseEmptyCommand(t *testing.T) {
 	_, err := ParseCommand("   ")
 
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestParseSetCommandWithTTL(t *testing.T) {
+	command, err := ParseCommand(`SET session "active" EX 60`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if command.TTLSeconds != 60 {
+		t.Fatalf("expected TTL 60, got %d", command.TTLSeconds)
+	}
+}
+
+func TestParseWhereCommand(t *testing.T) {
+	command, err := ParseCommand(`GET WHERE value contains "hello world"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if command.Type != CommandWhere || command.FilterField != FilterValue {
+		t.Fatalf("unexpected command: %+v", command)
+	}
+	if command.Operator != OperatorContains || command.FilterValue != "hello world" {
+		t.Fatalf("unexpected filter: %+v", command)
+	}
+}
+
+func TestParseWhereCommandRejectsUnknownField(t *testing.T) {
+	_, err := ParseCommand("GET WHERE age > 18")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
