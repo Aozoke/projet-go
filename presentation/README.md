@@ -5,9 +5,10 @@ entre 6 et 15 lignes et viennent directement des fichiers du projet.
 
 Fichiers :
 
-- `wasmredis-presentation.pptx` : version PowerPoint modifiable.
-- `wasmredis-presentation.pdf` : version PDF a envoyer/ouvrir facilement.
-- `notes-orales.md` : aide pour savoir quoi dire slide par slide.
+- `wasmredis-presentation.pptx` : version originale conservee.
+- `wasmredis-presentation(2).pptx` : version PowerPoint remaniee et modifiable.
+- `wasmredis-presentation(2).pdf` : version PDF a envoyer/ouvrir facilement.
+- `notes-orales(2).md` : aide pour savoir quoi dire slide par slide.
 
 Pour regenerer la presentation :
 
@@ -20,7 +21,7 @@ Le script reprend des extraits exacts du code du projet, donc si une fonction ch
 Pour ouvrir directement le PDF depuis WSL :
 
 ```bash
-explorer.exe "$(wslpath -w presentation/wasmredis-presentation.pdf)"
+explorer.exe "$(wslpath -w 'presentation/wasmredis-presentation(2).pdf')"
 ```
 
-On peut aussi double-cliquer sur `wasmredis-presentation.pdf` dans GoLand.
+On peut aussi double-cliquer sur `wasmredis-presentation(2).pdf` dans GoLand.

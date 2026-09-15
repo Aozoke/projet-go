@@ -12,9 +12,9 @@ from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "presentation"
-PPTX_PATH = OUT / "wasmredis-presentation.pptx"
-PDF_PATH = OUT / "wasmredis-presentation.pdf"
-NOTES_PATH = OUT / "notes-orales.md"
+PPTX_PATH = OUT / "wasmredis-presentation(2).pptx"
+PDF_PATH = OUT / "wasmredis-presentation(2).pdf"
+NOTES_PATH = OUT / "notes-orales(2).md"
 
 PPT_W = Inches(13.333)
 PPT_H = Inches(7.5)
@@ -38,18 +38,20 @@ class Snippet:
     path: str
     start: int
     lines: list[str]
+    line_numbers: list[int] | None = None
 
     @property
     def label(self) -> str:
-        end = self.start + len(self.lines) - 1
+        end = self.line_numbers[-1] if self.line_numbers else self.start + len(self.lines) - 1
         return f"{self.path}:{self.start}-{end}"
 
     @property
     def numbered(self) -> str:
-        width = len(str(self.start + len(self.lines) - 1))
+        numbers = self.line_numbers or list(range(self.start, self.start + len(self.lines)))
+        width = len(str(numbers[-1]))
         return "\n".join(
             f"{number:>{width}}  {line.expandtabs(4)}"
-            for number, line in enumerate(self.lines, self.start)
+            for number, line in zip(numbers, self.lines)
         )
 
 
@@ -60,6 +62,26 @@ def snippet(path: str, marker: str, count: int) -> Snippet:
     if len(selected) > 15:
         raise ValueError(f"Extrait trop long : {path}")
     return Snippet(path, start + 1, selected)
+
+
+def compact_function(path: str, marker: str) -> Snippet:
+    source = (ROOT / path).read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(source) if marker in line)
+    selected: list[str] = []
+    numbers: list[int] = []
+    depth = 0
+
+    for index, line in enumerate(source[start:], start):
+        depth += line.count("{") - line.count("}")
+        if line.strip() and not line.lstrip().startswith("//"):
+            selected.append(line)
+            numbers.append(index + 1)
+        if depth == 0:
+            break
+
+    if len(selected) > 15:
+        raise ValueError(f"Extrait trop long : {path}")
+    return Snippet(path, start + 1, selected, numbers)
 
 
 SLIDES = [
@@ -102,33 +124,40 @@ SLIDES = [
         ),
     },
     {
-        "kind": "code",
-        "title": "Le buffer appartient au moteur Go",
-        "subtitle": "Les ecritures attendent en RAM avant le flush",
-        "snippets": [snippet("internal/redis/engine.go", "func (engine *Engine) DrainBuffer", 10)],
+        "kind": "engine",
+        "title": "Du texte au state",
+        "subtitle": "ExecuteText relie le parser aux actions du moteur",
+        "snippets": [
+            snippet("internal/redis/engine.go", "type Engine struct", 8),
+            snippet("internal/redis/engine.go", "func (engine *Engine) ExecuteText", 14),
+        ],
         "takeaways": [
-            "Le mutex interdit deux vidages concurrents.",
-            "DrainBuffer copie les operations puis remet la file a zero.",
+            "Set, Get et Delete travaillent sur state.",
+            "Execute ajoute seulement les ecritures au buffer.",
         ],
         "note": (
-            "Chaque SET, DELETE ou expiration ajoute une Operation dans le buffer Go. "
-            "Le worker appelle DrainBuffer environ chaque seconde. La copie est renvoyee au worker "
-            "et le slice est reutilise, ce qui garde le mecanisme simple."
+            "La structure Engine garde state, la base vivante en RAM, et buffer, la file des "
+            "ecritures a persister. ExecuteText transforme le texte avec ParseCommand puis appelle "
+            "Execute. Execute dirige la commande vers Set, Get ou Delete et ajoute les operations "
+            "d'ecriture au buffer."
         ),
     },
     {
-        "kind": "code",
-        "title": "AOF puis snapshot",
-        "subtitle": "Le worker serialise l'acces OPFS",
-        "snippets": [snippet("web/src/worker/wasmRedis.worker.ts", "async function writePendingAof", 15)],
+        "kind": "persistence",
+        "title": "Du buffer au restore",
+        "subtitle": "AOF pour le journal, snapshot pour la photo complete",
+        "snippets": [
+            snippet("internal/redis/engine.go", "func (engine *Engine) DrainBuffer", 9),
+            snippet("web/src/worker/wasmRedis.worker.ts", "function saveSnapshot", 12),
+        ],
         "takeaways": [
-            "L'AOF est ajoute en fin de fichier, jamais reecrit a chaque SET.",
-            "En cas d'echec OPFS, les operations retournent dans retryAof.",
+            "DrainBuffer remet la file Go a zero sous mutex.",
+            "saveSnapshot ecrit le state puis compacte l'AOF.",
         ],
         "note": (
-            "Le worker recupere le buffer Go et le transforme en lignes JSON. appendOpfsText ouvre "
-            "un SyncAccessHandle exclusif. Toutes les taches disque passent aussi par storageLock. "
-            "Toutes les deux minutes, un snapshot complet est ecrit puis l'AOF est vide."
+            "DrainBuffer copie les operations sous mutex puis vide la file du moteur. "
+            "saveSnapshot attend les ecritures AOF, recupere le state Go, ecrit snapshot.json "
+            "et vide aof.log. Au demarrage, le worker recharge le snapshot puis rejoue l'AOF."
         ),
     },
     {
@@ -162,18 +191,22 @@ SLIDES = [
         ),
     },
     {
-        "kind": "code",
-        "title": "Le SDK rend les requetes typees",
-        "subtitle": "Les erreurs simples sont trouvees avant l'execution",
-        "snippets": [snippet("web/src/sdk/wasmRedis.ts", "export type WhereMethod", 8)],
+        "kind": "bridge",
+        "title": "React atteint le moteur Go",
+        "subtitle": "Le SDK et le bridge WASM transportent la commande",
+        "snippets": [
+            snippet("web/src/sdk/wasmRedis.ts", "pending.set(id", 3),
+            compact_function("cmd/wasm/main.go", "func wasmRedisExecute"),
+        ],
         "takeaways": [
-            "age: number autorise les plages ; name: string autorise contains.",
-            "Zod revalide aussi les donnees au runtime avant postMessage.",
+            "Le SDK valide avec TypeScript et Zod avant l'envoi.",
+            "wasmRedisExecute decode puis appelle Engine.ExecuteBatch.",
         ],
         "note": (
-            "Le generique Schema relie le champ, l'operateur et la valeur. TypeScript refuse par "
-            "exemple age contains ou age superieur a une string. Le SDK est une factory de fonctions, "
-            "sans classe ni new."
+            "pending.set memorise la promesse associee a l'identifiant, puis worker.postMessage "
+            "envoie la requete au worker. "
+            "wasmRedisExecute est la fonction Go exposee a JavaScript : elle verifie l'argument, "
+            "decode le JSON et transmet les commandes a Engine.ExecuteBatch."
         ),
     },
     {
@@ -269,8 +302,7 @@ def code_size(snippets, width_inches, height_inches):
     return max(8.5, min(15, by_width, by_height))
 
 
-def ppt_code(slide, snippets):
-    left, top, width, height = Inches(0.55), Inches(1.42), Inches(12.22), Inches(4.70)
+def ppt_code_panel(slide, snippets, left, top, width, height):
     ppt_rect(slide, left, top, width, height, PANEL, True, PANEL_LIGHT)
     labels = "   |   ".join(item.label for item in snippets)
     ppt_text(slide, labels, left + Inches(0.28), top + Inches(0.20), width - Inches(0.56), Inches(0.24), 9.5, TEAL, True)
@@ -281,11 +313,90 @@ def ppt_code(slide, snippets):
         top + Inches(0.62),
         width - Inches(0.60),
         height - Inches(0.82),
-        code_size(snippets, 11.62, 3.86),
+        code_size(snippets, width.inches - 0.60, height.inches - 0.82),
         TEXT,
         False,
         "Courier New",
     )
+
+
+def ppt_code(slide, snippets):
+    ppt_code_panel(
+        slide,
+        snippets,
+        Inches(0.55),
+        Inches(1.42),
+        Inches(12.22),
+        Inches(4.70),
+    )
+
+
+def ppt_stage_flow(slide, labels, colors, top):
+    left = Inches(0.55)
+    total_width = 12.22
+    gap = 0.28
+    node_width = (total_width - gap * (len(labels) - 1)) / len(labels)
+
+    for position, (label, color) in enumerate(zip(labels, colors)):
+        node_left = left + Inches(position * (node_width + gap))
+        ppt_rect(slide, node_left, top, Inches(node_width), Inches(0.70), PANEL_LIGHT, True)
+        ppt_rect(slide, node_left, top, Inches(0.07), Inches(0.70), color)
+        ppt_text(
+            slide,
+            label,
+            node_left + Inches(0.14),
+            top + Inches(0.22),
+            Inches(node_width - 0.22),
+            Inches(0.25),
+            10.2,
+            TEXT,
+            True,
+        )
+        if position < len(labels) - 1:
+            arrow_left = node_left + Inches(node_width + 0.07)
+            ppt_text(slide, ">", arrow_left, top + Inches(0.20), Inches(0.14), Inches(0.24), 14, ORANGE, True)
+
+
+def ppt_engine(slide, data, index):
+    ppt_background(slide)
+    ppt_header(slide, data, index)
+    ppt_stage_flow(
+        slide,
+        ["Command", "ExecuteText()", "Execute()", "Set / Get / Delete", "state", "buffer"],
+        [TEAL, YELLOW, ORANGE, GREEN, TEAL, RED],
+        Inches(1.40),
+    )
+    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(4.52), Inches(3.70))
+    ppt_code_panel(slide, [data["snippets"][1]], Inches(5.30), Inches(2.36), Inches(7.47), Inches(3.70))
+    ppt_takeaways(slide, data["takeaways"])
+
+
+def ppt_persistence(slide, data, index):
+    ppt_background(slide)
+    ppt_header(slide, data, index)
+    ppt_stage_flow(
+        slide,
+        ["state", "buffer Go", "AOF", "snapshot", "restore"],
+        [TEAL, YELLOW, ORANGE, RED, GREEN],
+        Inches(1.40),
+    )
+    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(5.55), Inches(3.70))
+    ppt_code_panel(slide, [data["snippets"][1]], Inches(6.34), Inches(2.36), Inches(6.43), Inches(3.70))
+    ppt_takeaways(slide, data["takeaways"])
+
+
+def ppt_bridge(slide, data, index):
+    ppt_background(slide)
+    ppt_header(slide, data, index)
+    ppt_stage_flow(
+        slide,
+        ["React", "SDK", "postMessage", "Worker", "wasmRedisExecute", "Engine"],
+        [TEAL, YELLOW, ORANGE, ORANGE, GREEN, TEAL],
+        Inches(1.40),
+    )
+    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(5.05), Inches(3.70))
+    ppt_code_panel(slide, [data["snippets"][1]], Inches(5.84), Inches(2.36), Inches(6.93), Inches(3.70))
+    ppt_takeaways(slide, data["takeaways"])
 
 
 def ppt_takeaways(slide, points):
@@ -388,6 +499,12 @@ def build_pptx():
             ppt_cover(slide, data)
         elif data["kind"] == "flow":
             ppt_flow(slide, data, index)
+        elif data["kind"] == "engine":
+            ppt_engine(slide, data, index)
+        elif data["kind"] == "persistence":
+            ppt_persistence(slide, data, index)
+        elif data["kind"] == "bridge":
+            ppt_bridge(slide, data, index)
         elif data["kind"] == "results":
             ppt_results(slide, data, index)
         else:
@@ -395,6 +512,7 @@ def build_pptx():
             ppt_header(slide, data, index)
             ppt_code(slide, data["snippets"])
             ppt_takeaways(slide, data["takeaways"])
+        slide.notes_slide.notes_text_frame.text = data["note"]
     presentation.save(PPTX_PATH)
 
 
@@ -437,8 +555,7 @@ def pdf_takeaways(page, points):
         pdf_text(page, point, left + 15, 69, 410, 10.2, TEXT, True)
 
 
-def pdf_code(page, snippets):
-    x, y, width, height = 40, 100, 880, 335
+def pdf_code_panel(page, snippets, x, y, width, height):
     pdf_rect(page, x, y, width, height, PANEL, 10)
     pdf_text(page, "   |   ".join(item.label for item in snippets), x + 20, y + height - 25, width - 40, 8.2, TEAL, True)
     text = code_text(snippets)
@@ -451,6 +568,60 @@ def pdf_code(page, snippets):
     for line in lines:
         page.drawString(x + 20, current, line)
         current -= size * 1.22
+
+
+def pdf_code(page, snippets):
+    pdf_code_panel(page, snippets, 40, 100, 880, 335)
+
+
+def pdf_stage_flow(page, labels, palette):
+    left = 40
+    total_width = 880
+    gap = 20
+    node_width = (total_width - gap * (len(labels) - 1)) / len(labels)
+
+    for position, (label, color) in enumerate(zip(labels, palette)):
+        node_left = left + position * (node_width + gap)
+        pdf_rect(page, node_left, 371, node_width, 52, PANEL_LIGHT, 7)
+        pdf_rect(page, node_left, 371, 5, 52, color)
+        pdf_text(page, label, node_left + 11, 402, node_width - 17, 8.8, TEXT, True)
+        if position < len(labels) - 1:
+            pdf_text(page, ">", node_left + node_width + 6, 402, 10, 12, ORANGE, True)
+
+
+def pdf_engine(page, data, index):
+    pdf_rect(page, 0, 0, PDF_W, PDF_H, BG)
+    pdf_header(page, data, index)
+    pdf_stage_flow(
+        page,
+        ["Command", "ExecuteText()", "Execute()", "Set / Get / Delete", "state", "buffer"],
+        [TEAL, YELLOW, ORANGE, GREEN, TEAL, RED],
+    )
+    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 325, 248)
+    pdf_code_panel(page, [data["snippets"][1]], 385, 98, 535, 248)
+    pdf_takeaways(page, data["takeaways"])
+
+
+def pdf_persistence(page, data, index):
+    pdf_rect(page, 0, 0, PDF_W, PDF_H, BG)
+    pdf_header(page, data, index)
+    pdf_stage_flow(page, ["state", "buffer Go", "AOF", "snapshot", "restore"], [TEAL, YELLOW, ORANGE, RED, GREEN])
+    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 400, 248)
+    pdf_code_panel(page, [data["snippets"][1]], 460, 98, 460, 248)
+    pdf_takeaways(page, data["takeaways"])
+
+
+def pdf_bridge(page, data, index):
+    pdf_rect(page, 0, 0, PDF_W, PDF_H, BG)
+    pdf_header(page, data, index)
+    pdf_stage_flow(
+        page,
+        ["React", "SDK", "postMessage", "Worker", "wasmRedisExecute", "Engine"],
+        [TEAL, YELLOW, ORANGE, ORANGE, GREEN, TEAL],
+    )
+    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 365, 248)
+    pdf_code_panel(page, [data["snippets"][1]], 425, 98, 495, 248)
+    pdf_takeaways(page, data["takeaways"])
 
 
 def pdf_cover(page, data):
@@ -521,6 +692,12 @@ def build_pdf():
             pdf_cover(page, data)
         elif data["kind"] == "flow":
             pdf_flow(page, data, index)
+        elif data["kind"] == "engine":
+            pdf_engine(page, data, index)
+        elif data["kind"] == "persistence":
+            pdf_persistence(page, data, index)
+        elif data["kind"] == "bridge":
+            pdf_bridge(page, data, index)
         elif data["kind"] == "results":
             pdf_results(page, data, index)
         else:
