@@ -234,6 +234,9 @@ async function loadWasm(): Promise<void> {
 
   const go = new GoClass();
   const response = await fetch(wasmUrl);
+  if (!response.ok) {
+    throw new Error("wasm engine not found");
+  }
   const bytes = await response.arrayBuffer();
   const wasm = await WebAssembly.instantiate(bytes, go.importObject);
 
@@ -280,12 +283,8 @@ function configureGoEngine(): void {
     throw new Error("wasm configure function missing");
   }
 
-  const response = JSON.parse(
-    scope.wasmRedisConfigure(JSON.stringify({ defaultTTLSeconds, btreeDegree })),
-  ) as unknown;
-  if (!isRecord(response) || response.ok !== true) {
-    throw new Error("invalid Go engine configuration");
-  }
+  const response = JSON.parse(scope.wasmRedisConfigure(JSON.stringify({ defaultTTLSeconds, btreeDegree }))) as unknown;
+  assertGoOK(response, "invalid Go engine configuration");
 }
 
 function sweepExpired(): void {
@@ -313,7 +312,7 @@ async function restoreFromOpfs(): Promise<void> {
   const snapshotStart = performance.now();
   const snapshot = await readOpfsText(snapshotFileName);
   if (snapshot.trim() !== "" && scope.wasmRedisLoadSnapshot) {
-    scope.wasmRedisLoadSnapshot(snapshot);
+    assertGoOK(JSON.parse(scope.wasmRedisLoadSnapshot(snapshot)) as unknown, "snapshot restore failed");
   }
   const snapshotMs = performance.now() - snapshotStart;
 
@@ -347,9 +346,7 @@ function replayGoOperations(operations: PersistedOperation[]): void {
   }
 
   const response = JSON.parse(scope.wasmRedisReplayOperations(JSON.stringify(operations))) as unknown;
-  if (!isRecord(response) || response.ok !== true) {
-    throw new Error(isRecord(response) && typeof response.error === "string" ? response.error : "AOF replay failed");
-  }
+  assertGoOK(response, "AOF replay failed");
 }
 
 function flushAof(): Promise<void> {
@@ -378,7 +375,7 @@ function clearDatabase(): Promise<void> {
     }
 
     if (scope.wasmRedisLoadSnapshot) {
-      scope.wasmRedisLoadSnapshot("{}");
+      assertGoOK(JSON.parse(scope.wasmRedisLoadSnapshot("{}")) as unknown, "engine reset failed");
     }
 
     await writeOpfsText(snapshotFileName, "{}");
@@ -574,6 +571,12 @@ function isPersistedOperation(value: unknown): value is PersistedOperation {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function assertGoOK(value: unknown, fallback: string): void {
+  if (!isRecord(value) || value.ok !== true) {
+    throw new Error(isRecord(value) && typeof value.error === "string" ? value.error : fallback);
+  }
 }
 
 function isNotEmptyString(value: unknown): value is string {

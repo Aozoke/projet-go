@@ -188,6 +188,10 @@ func TestEngineRangeIgnoresUpdatedAndDeletedValues(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("stale B-Tree values leaked into result: %+v", entries)
 	}
+	indexed := engine.numberIndex.RangeItems(OperatorGreaterThan, -1)
+	if len(indexed) != 1 || indexed[0].Key != "score" || indexed[0].Value != 5 {
+		t.Fatalf("stale values remain in B-Tree: %+v", indexed)
+	}
 }
 
 func TestEngineTTLExpiresOnGet(t *testing.T) {

@@ -99,6 +99,7 @@ func (engine *Engine) getAndExpire(key string) (string, bool, error) {
 	if engine.isExpired(stored) {
 		delete(engine.state, key)
 		engine.removeFromEqualsIndexLocked(key, stored.Value)
+		engine.removeFromNumberIndexLocked(stored.Value)
 		return "", true, fmt.Errorf("key not found")
 	}
 
@@ -113,6 +114,7 @@ func (engine *Engine) Delete(key string) {
 	delete(engine.state, key)
 	if exists {
 		engine.removeFromEqualsIndexLocked(key, stored.Value)
+		engine.removeFromNumberIndexLocked(stored.Value)
 	}
 }
 
@@ -425,12 +427,19 @@ func (engine *Engine) SweepExpired() []Operation {
 
 func (engine *Engine) removeExpiredLocked() []Operation {
 	writes := make([]Operation, 0)
+	numberIndexChanged := false
 	for key, stored := range engine.state {
 		if engine.isExpired(stored) {
 			delete(engine.state, key)
 			engine.removeFromEqualsIndexLocked(key, stored.Value)
+			if _, err := numberValue(stored.Value); err == nil {
+				numberIndexChanged = true
+			}
 			writes = append(writes, Operation{Type: CommandDelete, Key: key})
 		}
+	}
+	if numberIndexChanged {
+		engine.rebuildNumberIndexLocked()
 	}
 	return writes
 }
@@ -446,6 +455,7 @@ func (engine *Engine) removeIfExpiredLocked(key string, stored StoredValue) bool
 
 	delete(engine.state, key)
 	engine.removeFromEqualsIndexLocked(key, stored.Value)
+	engine.removeFromNumberIndexLocked(stored.Value)
 	return true
 }
 
@@ -482,6 +492,15 @@ func (engine *Engine) updateIndexesLocked(key string, previous StoredValue, hadP
 	}
 	keys[key] = struct{}{}
 
+	if hadPrevious {
+		if _, err := numberValue(previous.Value); err == nil {
+			// Le state contient déjà la nouvelle valeur : une reconstruction retire
+			// l'ancienne valeur numérique et ajoute la nouvelle une seule fois.
+			engine.rebuildNumberIndexLocked()
+			return
+		}
+	}
+
 	if value, err := numberValue(stored.Value); err == nil {
 		engine.numberIndex.Insert(BTreeItem{Value: value, Key: key})
 	}
@@ -492,6 +511,21 @@ func (engine *Engine) removeFromEqualsIndexLocked(key string, value string) {
 	delete(keys, key)
 	if len(keys) == 0 {
 		delete(engine.equalsIndex, value)
+	}
+}
+
+func (engine *Engine) removeFromNumberIndexLocked(value string) {
+	if _, err := numberValue(value); err == nil {
+		engine.rebuildNumberIndexLocked()
+	}
+}
+
+func (engine *Engine) rebuildNumberIndexLocked() {
+	engine.numberIndex = NewBTree(engine.btreeDegree)
+	for key, stored := range engine.state {
+		if value, err := numberValue(stored.Value); err == nil {
+			engine.numberIndex.Insert(BTreeItem{Value: value, Key: key})
+		}
 	}
 }
 
