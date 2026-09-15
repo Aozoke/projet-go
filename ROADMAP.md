@@ -1,45 +1,40 @@
 # Roadmap WasmRedis
 
-Objectif : garder une version qui fonctionne et que l'on peut expliquer.
+Objectif : une version simple, fonctionnelle et explicable de bout en bout.
 
-## Fait
+## Termine
 
-- setup Go et tests
-- parser `SET`, `GET`, `DELETE`, `ALL`, `GET WHERE`
-- moteur en RAM
-- batch
-- AOF, flush, snapshot et restore OPFS
-- TTL lazy et balayage actif
-- index `equals`
-- B-Tree pour les plages numeriques
-- Go compile en WASM
-- Web Worker
-- SDK TypeScript et query builder
-- validation Zod dans le SDK et validation Go dans le parser
-- UI React CRUD et filtres
-- seed configurable, limite a 100 par defaut
+- setup Go, tests et compilation WASM
+- parser `SET`, `GET`, `DELETE`, `ALL`, `GET WHERE` et TTL `EX`
+- state en RAM et buffer d'ecritures dans le moteur Go
+- batch execute dans l'ordre
+- index inverse pour `equals`
+- B-Tree pour `>`, `>=`, `<` et `<=`
+- TTL lazy, balayage actif et suppression persistante
+- Worker avec acces OPFS exclusif
+- AOF, snapshot, compaction et restore exact des TTL
+- SDK TypeScript fonctionnel, generique et valide par Zod
+- React CRUD et filtres
 - virtual scroll maison
-- store externe et abonnement par ligne
-- benchmark natif Go
-- benchmark p50 / p95 dans le navigateur
-- configuration `.env`
+- abonnement et render granulaire par ligne
+- dataset 100 000 fourni, sans chargement par defaut
+- tests Go avec race detector et tests TypeScript
+- benchmarks moteur, batch, restore et FPS
+- README, rapport de benchmark et presentation de 10 slides
 
-## Encore a ameliorer
+## Verifications faites
 
-- mesurer le FPS du scroll dans le navigateur
-- mesurer le restore snapshot seul puis snapshot + AOF
-- tester sur un plus gros ordinateur avec 100 000 entrees
-- optimiser la mise a jour du B-Tree sans le reconstruire
-- typer un schema de documents plus riche que `key -> value`
-- completer le rapport de benchmark avec les mesures finales
-- terminer la presentation
+- une cle revient apres flush AOF et rechargement
+- 100 entrees reviennent apres snapshot et compaction
+- une cle TTL disparait et produit un `DELETE` persistant
+- `value >= 50` renvoie 50 resultats apres le seed 100
+- 29 lignes DOM maximum pour le calcul avec 100 000 entrees
+- une ligne editee passe de 1 a 2 renders, l'autre reste a 1
+- aucun message d'erreur pendant le parcours navigateur final
 
-## Ordre conseille
+## Bonus possibles plus tard
 
-1. Tester chaque bouton de l'interface.
-2. Essayer une cle avec un TTL de 5 secondes.
-3. Faire `Seed 100`, puis filtrer `value >= 50`.
-4. Modifier une ligne et regarder son compteur orange.
-5. Lancer le bouton `Benchmark` et noter les valeurs.
-6. Recharger la page pour verifier le restore OPFS.
-7. Reprendre ensuite la presentation, a partir du code reel.
+- synchronisation de plusieurs onglets avec BroadcastChannel et Web Locks
+- suppression B-Tree sans reconstruction
+- format binaire pour reduire la taille de l'AOF et du snapshot
+- test complet du seed 100 000 sur une machine plus puissante
