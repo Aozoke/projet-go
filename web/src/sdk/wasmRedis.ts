@@ -11,7 +11,19 @@ export type Entry<Schema> = {
 export type RedisCommand = string;
 export type FilterField = "key" | "value";
 export type FilterOperator = "equals" | "contains" | ">" | ">=" | "<" | "<=";
+export type FilterOperatorFor<Value> = Value extends number
+  ? "equals" | ">" | ">=" | "<" | "<="
+  : Value extends string
+    ? "equals" | "contains"
+    : "equals";
 export type SetOptions = { ex?: number };
+
+export type RestoreMetrics = {
+  snapshotMs: number;
+  aofMs: number;
+  totalMs: number;
+  aofOperationCount: number;
+};
 
 export type RedisResult = {
   ok: boolean;
@@ -20,8 +32,26 @@ export type RedisResult = {
   error?: string;
 };
 
+export type WhereMethod<Schema extends Record<string, unknown>> = {
+  <Key extends RedisKey<Schema>>(
+    field: Key,
+    operator: FilterOperatorFor<Schema[Key]>,
+    value: Schema[Key],
+  ): WhereQuery<Schema>;
+  (field: FilterField, operator: FilterOperator, value: string | number): WhereQuery<Schema>;
+};
+
+export type WhereCommandMethod<Schema extends Record<string, unknown>> = {
+  <Key extends RedisKey<Schema>>(
+    field: Key,
+    operator: FilterOperatorFor<Schema[Key]>,
+    value: Schema[Key],
+  ): RedisCommand;
+  (field: FilterField, operator: FilterOperator, value: string | number): RedisCommand;
+};
+
 export type WhereQuery<Schema extends Record<string, unknown>> = {
-  where: (field: FilterField, operator: FilterOperator, value: string | number) => WhereQuery<Schema>;
+  where: WhereMethod<Schema>;
   exec: () => Promise<Entry<Schema>[]>;
 };
 
@@ -38,19 +68,20 @@ export type WasmRedis<Schema extends Record<string, unknown>> = {
   batch: (commands: RedisCommand[]) => Promise<RedisResult[]>;
   flush: () => Promise<void>;
   clear: () => Promise<void>;
+  metrics: () => Promise<RestoreMetrics>;
   cmd: {
     set: <Key extends RedisKey<Schema>>(key: Key, value: Schema[Key], options?: SetOptions) => RedisCommand;
     get: <Key extends RedisKey<Schema>>(key: Key) => RedisCommand;
     delete: <Key extends RedisKey<Schema>>(key: Key) => RedisCommand;
-    where: (field: FilterField, operator: FilterOperator, value: string | number) => RedisCommand;
+    where: WhereCommandMethod<Schema>;
   };
   destroy: () => void;
 };
 
 type Filter = {
-  field: FilterField;
+  field: string;
   operator: FilterOperator;
-  value: string | number;
+  value: unknown;
 };
 
 const redisResultSchema = z.object({
@@ -63,7 +94,19 @@ const redisResultSchema = z.object({
 const workerResponseSchema = z.object({
   id: z.string(),
   ok: z.boolean(),
-  data: z.object({ results: z.array(redisResultSchema) }).optional(),
+  data: z
+    .object({
+      results: z.array(redisResultSchema).optional(),
+      metrics: z
+        .object({
+          snapshotMs: z.number(),
+          aofMs: z.number(),
+          totalMs: z.number(),
+          aofOperationCount: z.number().int().nonnegative(),
+        })
+        .optional(),
+    })
+    .optional(),
   error: z.string().optional(),
 });
 
@@ -75,6 +118,7 @@ const executeRequestSchema = z.object({
 
 const flushRequestSchema = z.object({ id: z.string(), type: z.literal("flush") });
 const clearRequestSchema = z.object({ id: z.string(), type: z.literal("clear") });
+const metricsRequestSchema = z.object({ id: z.string(), type: z.literal("metrics") });
 const initRequestSchema = z.object({
   id: z.literal("init"),
   type: z.literal("init"),
@@ -82,10 +126,11 @@ const initRequestSchema = z.object({
 });
 
 const setOptionsSchema = z.object({ ex: z.number().int().positive().optional() });
+const keySchema = z.string().min(1).regex(/^\S+$/, "a key cannot contain spaces");
 const filterSchema = z.object({
-  field: z.enum(["key", "value"]),
+  field: keySchema,
   operator: z.enum(["equals", "contains", ">", ">=", "<", "<="]),
-  value: z.union([z.string(), z.number()]),
+  value: z.union([z.string(), z.number().finite(), z.boolean()]),
 });
 
 type WorkerResponse = z.infer<typeof workerResponseSchema>;
@@ -164,44 +209,82 @@ export async function initWasmRedis<Schema extends Record<string, unknown>>(): P
     }
   };
 
+  const metrics = async (): Promise<RestoreMetrics> => {
+    const id = String(nextId++);
+    const response = await request(metricsRequestSchema.parse({ id, type: "metrics" }), id);
+    if (!response.ok || !response.data?.metrics) {
+      throw new Error(response.error ?? "metrics failed");
+    }
+    return response.data.metrics;
+  };
+
+  const whereCommand = (field: string, operator: FilterOperator, value: unknown): RedisCommand => {
+    const filter = filterSchema.parse({ field, operator, value });
+    return `GET WHERE ${filter.field} ${filter.operator} ${quoteValue(serializeValue(filter.value))}`;
+  };
+
   const cmd = {
     set: <Key extends RedisKey<Schema>>(key: Key, value: Schema[Key], options: SetOptions = {}) => {
+      const validKey = keySchema.parse(key);
       const validOptions = setOptionsSchema.parse(options);
       const ttl = validOptions.ex === undefined ? "" : ` EX ${validOptions.ex}`;
-      return `SET ${key} ${quoteValue(value)}${ttl}`;
+      return `SET ${validKey} ${quoteValue(serializeValue(value))}${ttl}`;
     },
-    get: <Key extends RedisKey<Schema>>(key: Key) => `GET ${key}`,
-    delete: <Key extends RedisKey<Schema>>(key: Key) => `DELETE ${key}`,
-    where: (field: FilterField, operator: FilterOperator, value: string | number) => {
-      const filter = filterSchema.parse({ field, operator, value });
-      return `GET WHERE ${filter.field} ${filter.operator} ${quoteValue(filter.value)}`;
-    },
+    get: <Key extends RedisKey<Schema>>(key: Key) => `GET ${keySchema.parse(key)}`,
+    delete: <Key extends RedisKey<Schema>>(key: Key) => `DELETE ${keySchema.parse(key)}`,
+    where: whereCommand as WhereCommandMethod<Schema>,
   };
 
   const list = async (): Promise<Entry<Schema>[]> => {
     const [result] = await send(["ALL"]);
     assertOK(result);
-    return (result.entries ?? []) as Entry<Schema>[];
+    return decodeEntries<Schema>(result.entries ?? []);
   };
 
-  const createWhereQuery = (filters: Filter[] = []): WhereQuery<Schema> => ({
-    where: (field, operator, value) => {
+  const createWhereQuery = (filters: Filter[] = []): WhereQuery<Schema> => {
+    const where = ((field: string, operator: FilterOperator, value: unknown) => {
       const filter = filterSchema.parse({ field, operator, value });
       return createWhereQuery([...filters, filter]);
-    },
-    exec: async () => {
-      if (filters.length === 0) {
-        return list();
-      }
+    }) as WhereMethod<Schema>;
 
-      const results = await send(filters.map((filter) => cmd.where(filter.field, filter.operator, filter.value)));
-      results.forEach(assertOK);
-      const firstEntries = results[0]?.entries ?? [];
-      const otherKeys = results.slice(1).map((result) => new Set((result.entries ?? []).map((entry) => entry.key)));
-      const entries = firstEntries.filter((entry) => otherKeys.every((keys) => keys.has(entry.key)));
-      return entries as Entry<Schema>[];
-    },
-  });
+    return {
+      where,
+      exec: async () => {
+        if (filters.length === 0) {
+          return list();
+        }
+
+        const results = await send(
+          filters.map((filter) => whereCommand(filter.field, filter.operator, filter.value)),
+        );
+        results.forEach(assertOK);
+
+        const schemaFieldMode = filters.every(
+          (filter) => filter.field !== "key" && filter.field !== "value",
+        );
+        if (schemaFieldMode) {
+          if (results.some((result) => (result.entries ?? []).length === 0)) {
+            return [];
+          }
+
+          const uniqueEntries = new Map<string, { key: string; value: string }>();
+          results
+            .flatMap((result) => result.entries ?? [])
+            .forEach((entry) => uniqueEntries.set(entry.key, entry));
+          return decodeEntries<Schema>([...uniqueEntries.values()]);
+        }
+
+        const firstEntries = results[0]?.entries ?? [];
+        const otherKeys = results
+          .slice(1)
+          .map((result) => new Set((result.entries ?? []).map((entry) => entry.key)));
+        const entries = firstEntries.filter((entry) =>
+          otherKeys.every((keys) => keys.has(entry.key)),
+        );
+        return decodeEntries<Schema>(entries);
+      },
+    };
+  };
 
   const get = ((key?: RedisKey<Schema>) => {
     if (key === undefined) {
@@ -212,7 +295,7 @@ export async function initWasmRedis<Schema extends Record<string, unknown>>(): P
       if (!result?.ok) {
         return null;
       }
-      return result.value as Schema[typeof key];
+      return deserializeValue(result.value) as Schema[typeof key];
     });
   }) as RedisGet<Schema>;
 
@@ -230,13 +313,55 @@ export async function initWasmRedis<Schema extends Record<string, unknown>>(): P
     batch: send,
     flush,
     clear,
+    metrics,
     cmd,
     destroy: () => worker.terminate(),
   };
 }
 
-function quoteValue(value: unknown): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
+export function serializeValue(value: unknown): string {
+  if (typeof value === "string") {
+    return `s:${value}`;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `n:${value}`;
+  }
+  if (typeof value === "boolean") {
+    return `b:${value}`;
+  }
+  const json = JSON.stringify(value);
+  if (json === undefined) {
+    throw new Error("unsupported Redis value");
+  }
+  return `j:${json}`;
+}
+
+export function deserializeValue(value: string | undefined): unknown {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value.startsWith("s:")) {
+    return value.slice(2);
+  }
+  if (value.startsWith("n:")) {
+    return Number(value.slice(2));
+  }
+  if (value.startsWith("b:")) {
+    return value.slice(2) === "true";
+  }
+  if (value.startsWith("j:")) {
+    return JSON.parse(value.slice(2));
+  }
+  return value;
+}
+
+function decodeEntries<Schema extends Record<string, unknown>>(
+  entries: Array<{ key: string; value: string }>,
+): Entry<Schema>[] {
+  return entries.map((entry) => ({ key: entry.key, value: deserializeValue(entry.value) })) as Entry<Schema>[];
+}
+
+function quoteValue(text: string): string {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 

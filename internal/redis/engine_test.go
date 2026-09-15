@@ -74,6 +74,46 @@ func TestEngineExecuteBatch(t *testing.T) {
 	if len(result.Writes) != 2 {
 		t.Fatalf("expected 2 write operations, got %d", len(result.Writes))
 	}
+	if result.BufferSize != 2 {
+		t.Fatalf("expected 2 buffered operations, got %d", result.BufferSize)
+	}
+}
+
+func TestEngineDrainBuffer(t *testing.T) {
+	engine := NewEngine()
+	engine.ExecuteBatch([]string{`SET name "matt"`, "DELETE name"})
+
+	writes := engine.DrainBuffer()
+	if len(writes) != 2 || engine.BufferSize() != 0 {
+		t.Fatalf("unexpected drained buffer: %+v", writes)
+	}
+	if empty := engine.DrainBuffer(); empty == nil || len(empty) != 0 {
+		t.Fatalf("empty buffer must be an empty array, got %+v", empty)
+	}
+}
+
+func TestReplayOperationsRestoresStateWithoutBuffering(t *testing.T) {
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	engine := NewEngineWithConfig(Config{BTreeDegree: 4, Now: func() time.Time { return now }})
+	expiresAt := now.Add(time.Minute).UnixMilli()
+
+	err := engine.ReplayOperations([]Operation{
+		{Type: CommandSet, Key: "name", Value: "s:matt"},
+		{Type: CommandSet, Key: "session", Value: "s:active", ExpiresAt: expiresAt},
+		{Type: CommandDelete, Key: "name"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.BufferSize() != 0 {
+		t.Fatal("replay must not fill the write buffer")
+	}
+	if _, err := engine.Get("name"); err == nil {
+		t.Fatal("deleted key was restored")
+	}
+	if value, err := engine.Get("session"); err != nil || value != "s:active" {
+		t.Fatalf("TTL value was not restored: %q, %v", value, err)
+	}
 }
 
 func TestEngineEntries(t *testing.T) {
@@ -123,6 +163,33 @@ func TestEngineWhereRangeUsesNumberIndex(t *testing.T) {
 	}
 }
 
+func TestEngineWhereUsesSchemaField(t *testing.T) {
+	engine := NewEngine()
+	engine.Set("name", "s:matt")
+	engine.Set("age", "n:25")
+
+	entries, _, err := engine.Query("age", OperatorGreaterThan, "n:18")
+	if err != nil || len(entries) != 1 || entries[0].Key != "age" {
+		t.Fatalf("unexpected schema field result: %+v, %v", entries, err)
+	}
+}
+
+func TestEngineRangeIgnoresUpdatedAndDeletedValues(t *testing.T) {
+	engine := NewEngine()
+	engine.Set("score", "50")
+	engine.Set("score", "5")
+	engine.Set("deleted", "60")
+	engine.Delete("deleted")
+
+	entries, _, err := engine.Query(FilterValue, OperatorGreaterThan, "40")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stale B-Tree values leaked into result: %+v", entries)
+	}
+}
+
 func TestEngineTTLExpiresOnGet(t *testing.T) {
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	engine := NewEngineWithConfig(Config{
@@ -155,6 +222,21 @@ func TestEngineTTLSweep(t *testing.T) {
 
 	if len(writes) != 1 || writes[0].Key != "temporary" {
 		t.Fatalf("unexpected sweep writes: %+v", writes)
+	}
+}
+
+func TestFilteredGetPersistsExpiredDelete(t *testing.T) {
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	engine := NewEngineWithConfig(Config{BTreeDegree: 4, Now: func() time.Time { return now }})
+	engine.SetWithTTL("score", "50", 5)
+	now = now.Add(6 * time.Second)
+
+	result, writes := engine.ExecuteText("GET WHERE value > 10")
+	if !result.OK || len(result.Entries) != 0 {
+		t.Fatalf("expired entry leaked into filter: %+v", result)
+	}
+	if len(writes) != 1 || writes[0].Type != CommandDelete {
+		t.Fatalf("expected persisted expiration, got %+v", writes)
 	}
 }
 

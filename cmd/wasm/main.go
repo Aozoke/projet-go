@@ -55,6 +55,8 @@ func main() {
 
 	// Permet au worker de lancer le balayage périodique des TTL.
 	js.Global().Set("wasmRedisSweepExpired", js.FuncOf(wasmRedisSweepExpired))
+	js.Global().Set("wasmRedisDrainBuffer", js.FuncOf(wasmRedisDrainBuffer))
+	js.Global().Set("wasmRedisReplayOperations", js.FuncOf(wasmRedisReplayOperations))
 
 	// Empêche le programme WASM de se terminer
 	select {}
@@ -126,10 +128,32 @@ func wasmRedisConfigure(_ js.Value, args []js.Value) any {
 }
 
 func wasmRedisSweepExpired(_ js.Value, _ []js.Value) any {
+	writes := engine.SweepExpired()
 	return encode(redis.BatchResult{
-		Results: []redis.Result{},
-		Writes:  engine.SweepExpired(),
+		Results:    []redis.Result{},
+		Writes:     writes,
+		BufferSize: engine.BufferSize(),
 	})
+}
+
+func wasmRedisDrainBuffer(_ js.Value, _ []js.Value) any {
+	return encode(engine.DrainBuffer())
+}
+
+func wasmRedisReplayOperations(_ js.Value, args []js.Value) any {
+	if len(args) == 0 {
+		return encode(errorResponse{OK: false, Error: "missing operations"})
+	}
+
+	var operations []redis.Operation
+	if err := json.Unmarshal([]byte(args[0].String()), &operations); err != nil {
+		return encode(errorResponse{OK: false, Error: err.Error()})
+	}
+	if err := engine.ReplayOperations(operations); err != nil {
+		return encode(errorResponse{OK: false, Error: err.Error()})
+	}
+
+	return encode(errorResponse{OK: true})
 }
 
 // Fonction appelée pour récupérer l'état actuel de la base

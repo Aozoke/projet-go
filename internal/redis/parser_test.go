@@ -183,9 +183,22 @@ func TestParseWhereCommand(t *testing.T) {
 	}
 }
 
-func TestParseWhereCommandRejectsUnknownField(t *testing.T) {
-	_, err := ParseCommand("GET WHERE age > 18")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+func TestParseWhereCommandAcceptsSchemaField(t *testing.T) {
+	command, err := ParseCommand("GET WHERE age > 18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.FilterField != "age" {
+		t.Fatalf("expected age field, got %s", command.FilterField)
+	}
+}
+
+func TestParseSetCommandUnescapesJSON(t *testing.T) {
+	command, err := ParseCommand(`SET user "{\"name\":\"matt\"}"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Value != `{"name":"matt"}` {
+		t.Fatalf("unexpected value: %s", command.Value)
 	}
 }

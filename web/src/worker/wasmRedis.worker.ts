@@ -50,6 +50,14 @@ type PersistedOperation = {
 type BatchResult = {
   results: RedisResult[];
   writes: PersistedOperation[];
+  bufferSize: number;
+};
+
+export type RestoreMetrics = {
+  snapshotMs: number;
+  aofMs: number;
+  totalMs: number;
+  aofOperationCount: number;
 };
 
 type WorkerRequest =
@@ -70,6 +78,10 @@ type WorkerRequest =
   | {
       id: string;
       type: "clear";
+    }
+  | {
+      id: string;
+      type: "metrics";
     };
 
 const scope = self as DedicatedWorkerGlobalScope & {
@@ -78,21 +90,32 @@ const scope = self as DedicatedWorkerGlobalScope & {
   wasmRedisDumpSnapshot?: () => string;
   wasmRedisConfigure?: (configuration: string) => string;
   wasmRedisSweepExpired?: () => string;
+  wasmRedisDrainBuffer?: () => string;
+  wasmRedisReplayOperations?: (operations: string) => string;
 };
 
 const encoder = new TextEncoder();
-const goRuntimeUrl = "/wasm_exec.js";
+const goRuntimeUrl = readStringEnv("VITE_WASMREDIS_GO_RUNTIME_URL", "/wasm_exec.js");
+const wasmUrl = readStringEnv("VITE_WASMREDIS_WASM_URL", "/wasmredis.wasm");
 const flushIntervalMs = readPositiveEnv("VITE_WASMREDIS_FLUSH_INTERVAL_MS", 1000);
 const snapshotIntervalMs = readPositiveEnv("VITE_WASMREDIS_SNAPSHOT_INTERVAL_MS", 120000);
 const maxBufferSize = readPositiveEnv("VITE_WASMREDIS_MAX_BUFFER_SIZE", 1000);
 const expirationSweepIntervalMs = readPositiveEnv("VITE_WASMREDIS_EXPIRATION_SWEEP_INTERVAL_MS", 1000);
 const defaultTTLSeconds = readNonNegativeEnv("VITE_WASMREDIS_DEFAULT_TTL_SECONDS", 0);
 const btreeDegree = readPositiveEnv("VITE_WASMREDIS_BTREE_ORDER", 8, 2);
+const aofFileName = readStringEnv("VITE_WASMREDIS_AOF_FILE_NAME", "aof.log");
+const snapshotFileName = readStringEnv("VITE_WASMREDIS_SNAPSHOT_FILE_NAME", "snapshot.json");
 
 let opfsDirectory: OpfsDirectory | null = null;
-let pendingAof: PersistedOperation[] = [];
+let retryAof: PersistedOperation[] = [];
 let storageLock = Promise.resolve();
 let ready: Promise<void> | null = null;
+let restoreMetrics: RestoreMetrics = {
+  snapshotMs: 0,
+  aofMs: 0,
+  totalMs: 0,
+  aofOperationCount: 0,
+};
 
 scope.addEventListener("message", async (event: MessageEvent) => {
   const request = parseRequest(event.data);
@@ -142,8 +165,19 @@ scope.addEventListener("message", async (event: MessageEvent) => {
       return;
     }
 
+    if (request.type === "metrics") {
+      scope.postMessage({
+        id: request.id,
+        ok: true,
+        data: { metrics: restoreMetrics },
+      });
+      return;
+    }
+
     const result = executeGo(request.commands);
-    enqueueWrites(result.writes);
+    if (result.bufferSize >= maxBufferSize) {
+      void flushAof();
+    }
 
     scope.postMessage({
       id: request.id,
@@ -199,7 +233,7 @@ async function loadWasm(): Promise<void> {
   }
 
   const go = new GoClass();
-  const response = await fetch("/wasmredis.wasm");
+  const response = await fetch(wasmUrl);
   const bytes = await response.arrayBuffer();
   const wasm = await WebAssembly.instantiate(bytes, go.importObject);
 
@@ -228,7 +262,9 @@ async function waitForGoBridge(): Promise<void> {
       scope.wasmRedisLoadSnapshot &&
       scope.wasmRedisDumpSnapshot &&
       scope.wasmRedisConfigure &&
-      scope.wasmRedisSweepExpired
+      scope.wasmRedisSweepExpired &&
+      scope.wasmRedisDrainBuffer &&
+      scope.wasmRedisReplayOperations
     ) {
       return;
     }
@@ -258,7 +294,9 @@ function sweepExpired(): void {
   }
 
   const result = parseBatchResult(JSON.parse(scope.wasmRedisSweepExpired()));
-  enqueueWrites(result.writes);
+  if (result.bufferSize >= maxBufferSize) {
+    void flushAof();
+  }
 }
 
 function executeGo(commands: string[]): BatchResult {
@@ -271,33 +309,46 @@ function executeGo(commands: string[]): BatchResult {
 }
 
 async function restoreFromOpfs(): Promise<void> {
-  const snapshot = await readOpfsText("snapshot.json");
+  const totalStart = performance.now();
+  const snapshotStart = performance.now();
+  const snapshot = await readOpfsText(snapshotFileName);
   if (snapshot.trim() !== "" && scope.wasmRedisLoadSnapshot) {
     scope.wasmRedisLoadSnapshot(snapshot);
   }
+  const snapshotMs = performance.now() - snapshotStart;
 
-  const aof = await readOpfsText("aof.log");
-  const commands = aof
+  const aofStart = performance.now();
+  const aof = await readOpfsText(aofFileName);
+  const operations = aof
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as PersistedOperation)
-    .map(operationToCommand);
+    .map((line) => JSON.parse(line) as unknown);
 
-  if (commands.length > 0) {
-    executeGo(commands);
+  if (!operations.every(isPersistedOperation)) {
+    throw new Error("invalid AOF operation");
   }
+
+  if (operations.length > 0) {
+    replayGoOperations(operations);
+  }
+
+  restoreMetrics = {
+    snapshotMs,
+    aofMs: performance.now() - aofStart,
+    totalMs: performance.now() - totalStart,
+    aofOperationCount: operations.length,
+  };
 }
 
-function enqueueWrites(writes: PersistedOperation[]): void {
-  if (writes.length === 0) {
-    return;
+function replayGoOperations(operations: PersistedOperation[]): void {
+  if (!scope.wasmRedisReplayOperations) {
+    throw new Error("wasm replay function missing");
   }
 
-  pendingAof = pendingAof.concat(writes);
-
-  if (pendingAof.length >= maxBufferSize) {
-    void flushAof();
+  const response = JSON.parse(scope.wasmRedisReplayOperations(JSON.stringify(operations))) as unknown;
+  if (!isRecord(response) || response.ok !== true) {
+    throw new Error(isRecord(response) && typeof response.error === "string" ? response.error : "AOF replay failed");
   }
 }
 
@@ -313,33 +364,54 @@ function saveSnapshot(): Promise<void> {
   return withStorageLock(async () => {
     await writePendingAof();
     const snapshot = scope.wasmRedisDumpSnapshot?.() ?? "{}";
-    await writeOpfsText("snapshot.json", snapshot);
-    await writeOpfsText("aof.log", "");
+    await writeOpfsText(snapshotFileName, snapshot);
+    await writeOpfsText(aofFileName, "");
   });
 }
 
 function clearDatabase(): Promise<void> {
   return withStorageLock(async () => {
-    pendingAof = [];
+    retryAof = [];
+
+    if (scope.wasmRedisDrainBuffer) {
+      scope.wasmRedisDrainBuffer();
+    }
 
     if (scope.wasmRedisLoadSnapshot) {
       scope.wasmRedisLoadSnapshot("{}");
     }
 
-    await writeOpfsText("snapshot.json", "{}");
-    await writeOpfsText("aof.log", "");
+    await writeOpfsText(snapshotFileName, "{}");
+    await writeOpfsText(aofFileName, "");
   });
 }
 
 async function writePendingAof(): Promise<void> {
-  if (pendingAof.length === 0) {
+  const writes = retryAof.concat(drainGoBuffer());
+  if (writes.length === 0) {
     return;
   }
 
-  const writes = pendingAof;
-  pendingAof = [];
+  retryAof = [];
   const lines = writes.map((operation) => JSON.stringify(operation)).join("\n") + "\n";
-  await appendOpfsText("aof.log", lines);
+  try {
+    await appendOpfsText(aofFileName, lines);
+  } catch (error) {
+    retryAof = writes.concat(retryAof);
+    throw error;
+  }
+}
+
+function drainGoBuffer(): PersistedOperation[] {
+  if (!scope.wasmRedisDrainBuffer) {
+    throw new Error("wasm buffer function missing");
+  }
+
+  const value = JSON.parse(scope.wasmRedisDrainBuffer()) as unknown;
+  if (!Array.isArray(value) || !value.every(isPersistedOperation)) {
+    throw new Error("invalid Go write buffer");
+  }
+  return value;
 }
 
 function withStorageLock(task: () => Promise<void>): Promise<void> {
@@ -412,23 +484,6 @@ async function appendOpfsText(fileName: string, text: string): Promise<void> {
   }
 }
 
-function operationToCommand(operation: PersistedOperation): string {
-  if (operation.type === "DELETE") {
-    return `DELETE ${operation.key}`;
-  }
-
-  let ttl = "";
-  if (operation.expiresAt !== undefined) {
-    const remainingSeconds = Math.ceil((operation.expiresAt - Date.now()) / 1000);
-    if (remainingSeconds <= 0) {
-      return `DELETE ${operation.key}`;
-    }
-    ttl = ` EX ${remainingSeconds}`;
-  }
-
-  return `SET ${operation.key} "${(operation.value ?? "").replaceAll('"', '\\"')}"${ttl}`;
-}
-
 function parseRequest(value: unknown): WorkerRequest | Error {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.type !== "string") {
     return new Error("invalid worker request");
@@ -456,6 +511,13 @@ function parseRequest(value: unknown): WorkerRequest | Error {
     };
   }
 
+  if (value.type === "metrics") {
+    return {
+      id: value.id,
+      type: "metrics",
+    };
+  }
+
   if (value.type === "execute" && Array.isArray(value.commands) && value.commands.every(isNotEmptyString)) {
     return {
       id: value.id,
@@ -468,7 +530,12 @@ function parseRequest(value: unknown): WorkerRequest | Error {
 }
 
 function parseBatchResult(value: unknown): BatchResult {
-  if (!isRecord(value) || !Array.isArray(value.results) || !Array.isArray(value.writes)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.results) ||
+    !Array.isArray(value.writes) ||
+    typeof value.bufferSize !== "number"
+  ) {
     throw new Error("invalid wasm result");
   }
 
@@ -479,6 +546,7 @@ function parseBatchResult(value: unknown): BatchResult {
   return {
     results: value.results,
     writes: value.writes,
+    bufferSize: value.bufferSize,
   };
 }
 
@@ -522,4 +590,10 @@ function readNonNegativeEnv(name: string, fallback: number): number {
   const env = import.meta.env as Record<string, string | undefined>;
   const value = Number(env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function readStringEnv(name: string, fallback: string): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const value = env[name]?.trim();
+  return value || fallback;
 }

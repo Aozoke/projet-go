@@ -120,9 +120,14 @@ func parseSetCommand(parts []string) (Command, error) {
 	// Cela permet d'avoir une valeur avec plusieurs mots
 	rawValue := strings.Join(parts[2:valueEnd], " ")
 
-	// Vérifie que la valeur est entourée de guillemets
+	// Vérifie que la valeur est entourée de guillemets.
 	if !strings.HasPrefix(rawValue, `"`) || !strings.HasSuffix(rawValue, `"`) {
 		return Command{}, fmt.Errorf("value must be quoted")
+	}
+
+	value, err := strconv.Unquote(rawValue)
+	if err != nil {
+		return Command{}, fmt.Errorf("invalid quoted value")
 	}
 
 	// Création de la commande SET
@@ -130,8 +135,7 @@ func parseSetCommand(parts []string) (Command, error) {
 		Type: CommandSet,
 		Key:  parts[1],
 
-		// Retire les guillemets autour de la valeur
-		Value:      strings.Trim(rawValue, `"`),
+		Value:      value,
 		TTLSeconds: ttlSeconds,
 	}, nil
 }
@@ -142,17 +146,17 @@ func parseWhereCommand(parts []string) (Command, error) {
 		return Command{}, fmt.Errorf("GET WHERE needs a field, an operator and a value")
 	}
 
-	field := FilterField(strings.ToLower(parts[2]))
-	if field != FilterKey && field != FilterValue {
-		return Command{}, fmt.Errorf("field must be key or value")
-	}
+	field := FilterField(parts[2])
 
 	operator := FilterOperator(strings.ToLower(parts[3]))
 	if !isFilterOperator(operator) {
 		return Command{}, fmt.Errorf("unknown filter operator")
 	}
 
-	filterValue := strings.Trim(strings.Join(parts[4:], " "), `"`)
+	filterValue, err := parseFilterValue(strings.Join(parts[4:], " "))
+	if err != nil {
+		return Command{}, err
+	}
 	if filterValue == "" {
 		return Command{}, fmt.Errorf("missing filter value")
 	}
@@ -163,6 +167,18 @@ func parseWhereCommand(parts []string) (Command, error) {
 		Operator:    operator,
 		FilterValue: filterValue,
 	}, nil
+}
+
+func parseFilterValue(rawValue string) (string, error) {
+	if !strings.HasPrefix(rawValue, `"`) {
+		return rawValue, nil
+	}
+
+	value, err := strconv.Unquote(rawValue)
+	if err != nil {
+		return "", fmt.Errorf("invalid quoted filter value")
+	}
+	return value, nil
 }
 
 func isFilterOperator(operator FilterOperator) bool {

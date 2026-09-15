@@ -1,5 +1,7 @@
 package redis
 
+import "github.com/samber/lo"
+
 // BTreeItem associe une valeur numérique à la clé Redis qui la possède.
 type BTreeItem struct {
 	Value float64
@@ -85,33 +87,66 @@ func (tree *BTree) splitChild(parent *btreeNode, childIndex int) {
 	parent.children[childIndex+1] = right
 }
 
-// Range renvoie les clés dans l'ordre de leur valeur numérique.
-func (tree *BTree) Range(operator FilterOperator, target float64) []string {
-	items := tree.itemsInOrder(tree.root, nil)
-	keys := make([]string, 0)
+// RangeItems parcourt l'arbre dans le bon sens et s'arrête dès que la limite
+// est dépassée. Une plage ne transforme donc plus tout le B-Tree en slice.
+func (tree *BTree) RangeItems(operator FilterOperator, target float64) []BTreeItem {
+	items := make([]BTreeItem, 0)
 
-	for _, item := range items {
-		if matchesRange(item.Value, operator, target) {
-			keys = append(keys, item.Key)
-		}
+	if operator == OperatorLessThan || operator == OperatorLessOrEqual {
+		tree.walkAscending(tree.root, func(item BTreeItem) bool {
+			if !matchesRange(item.Value, operator, target) {
+				return false
+			}
+			items = append(items, item)
+			return true
+		})
+		return items
 	}
 
-	return keys
-}
-
-func (tree *BTree) itemsInOrder(node *btreeNode, items []BTreeItem) []BTreeItem {
-	for index, item := range node.items {
-		if !node.leaf {
-			items = tree.itemsInOrder(node.children[index], items)
+	tree.walkDescending(tree.root, func(item BTreeItem) bool {
+		if !matchesRange(item.Value, operator, target) {
+			return false
 		}
 		items = append(items, item)
-	}
+		return true
+	})
 
-	if !node.leaf {
-		items = tree.itemsInOrder(node.children[len(node.items)], items)
+	for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+		items[left], items[right] = items[right], items[left]
 	}
-
 	return items
+}
+
+func (tree *BTree) Range(operator FilterOperator, target float64) []string {
+	return lo.Map(tree.RangeItems(operator, target), func(item BTreeItem, _ int) string {
+		return item.Key
+	})
+}
+
+func (tree *BTree) walkAscending(node *btreeNode, visit func(BTreeItem) bool) bool {
+	for index, item := range node.items {
+		if !node.leaf && !tree.walkAscending(node.children[index], visit) {
+			return false
+		}
+		if !visit(item) {
+			return false
+		}
+	}
+
+	return node.leaf || tree.walkAscending(node.children[len(node.items)], visit)
+}
+
+func (tree *BTree) walkDescending(node *btreeNode, visit func(BTreeItem) bool) bool {
+	for index := len(node.items) - 1; index >= 0; index-- {
+		if !node.leaf && !tree.walkDescending(node.children[index+1], visit) {
+			return false
+		}
+		if !visit(node.items[index]) {
+			return false
+		}
+	}
+
+	return node.leaf || tree.walkDescending(node.children[0], visit)
 }
 
 func itemLess(left BTreeItem, right BTreeItem) bool {

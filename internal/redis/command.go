@@ -67,6 +67,7 @@ type Result struct {
 }
 
 type BatchResult struct {
-	Results []Result    `json:"results"`
-	Writes  []Operation `json:"writes"`
+	Results    []Result    `json:"results"`
+	Writes     []Operation `json:"writes"`
+	BufferSize int         `json:"bufferSize"`
 }

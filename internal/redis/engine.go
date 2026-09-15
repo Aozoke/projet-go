@@ -13,7 +13,9 @@ import (
 type Engine struct {
 	mu                sync.RWMutex
 	batchMu           sync.Mutex
+	bufferMu          sync.Mutex
 	state             Snapshot
+	buffer            []Operation
 	equalsIndex       map[string]map[string]struct{}
 	numberIndex       *BTree
 	btreeDegree       int
@@ -36,6 +38,7 @@ func NewEngineWithConfig(config Config) *Engine {
 
 	return &Engine{
 		state:             Snapshot{},
+		buffer:            []Operation{},
 		equalsIndex:       map[string]map[string]struct{}{},
 		numberIndex:       NewBTree(config.BTreeDegree),
 		btreeDegree:       config.BTreeDegree,
@@ -73,8 +76,9 @@ func (engine *Engine) SetWithTTL(key string, value string, ttlSeconds int64) Sto
 		stored.ExpiresAt = engine.now().Add(time.Duration(ttlSeconds) * time.Second).UnixMilli()
 	}
 
+	previous, hadPrevious := engine.state[key]
 	engine.state[key] = stored
-	engine.rebuildIndexesLocked()
+	engine.updateIndexesLocked(key, previous, hadPrevious, stored)
 	return stored
 }
 
@@ -94,7 +98,7 @@ func (engine *Engine) getAndExpire(key string) (string, bool, error) {
 
 	if engine.isExpired(stored) {
 		delete(engine.state, key)
-		engine.rebuildIndexesLocked()
+		engine.removeFromEqualsIndexLocked(key, stored.Value)
 		return "", true, fmt.Errorf("key not found")
 	}
 
@@ -105,8 +109,11 @@ func (engine *Engine) Delete(key string) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 
+	stored, exists := engine.state[key]
 	delete(engine.state, key)
-	engine.rebuildIndexesLocked()
+	if exists {
+		engine.removeFromEqualsIndexLocked(key, stored.Value)
+	}
 }
 
 func (engine *Engine) Entries() []Entry {
@@ -164,6 +171,12 @@ func (engine *Engine) ExecuteText(input string) (Result, []Operation) {
 }
 
 func (engine *Engine) Execute(command Command) (Result, []Operation) {
+	result, writes := engine.execute(command)
+	engine.appendToBuffer(writes)
+	return result, writes
+}
+
+func (engine *Engine) execute(command Command) (Result, []Operation) {
 	switch command.Type {
 	case CommandSet:
 		stored := engine.SetWithTTL(command.Key, command.Value, command.TTLSeconds)
@@ -201,20 +214,87 @@ func (engine *Engine) Execute(command Command) (Result, []Operation) {
 	}
 }
 
+func (engine *Engine) appendToBuffer(writes []Operation) {
+	if len(writes) == 0 {
+		return
+	}
+
+	engine.bufferMu.Lock()
+	defer engine.bufferMu.Unlock()
+	engine.buffer = append(engine.buffer, writes...)
+}
+
+// DrainBuffer rend les écritures au worker puis remet la file à zéro.
+func (engine *Engine) DrainBuffer() []Operation {
+	engine.bufferMu.Lock()
+	defer engine.bufferMu.Unlock()
+
+	writes := make([]Operation, len(engine.buffer))
+	copy(writes, engine.buffer)
+	engine.buffer = engine.buffer[:0]
+	return writes
+}
+
+func (engine *Engine) BufferSize() int {
+	engine.bufferMu.Lock()
+	defer engine.bufferMu.Unlock()
+	return len(engine.buffer)
+}
+
+// ReplayOperations rejoue l'AOF sans remettre les opérations dans le buffer.
+func (engine *Engine) ReplayOperations(operations []Operation) error {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+
+	for _, operation := range operations {
+		if operation.Key == "" {
+			return fmt.Errorf("operation key is missing")
+		}
+
+		switch operation.Type {
+		case CommandSet:
+			stored := StoredValue{Value: operation.Value, ExpiresAt: operation.ExpiresAt}
+			if engine.isExpired(stored) {
+				delete(engine.state, operation.Key)
+				continue
+			}
+			engine.state[operation.Key] = stored
+		case CommandDelete:
+			delete(engine.state, operation.Key)
+		default:
+			return fmt.Errorf("unsupported operation: %s", operation.Type)
+		}
+	}
+
+	engine.rebuildIndexesLocked()
+	return nil
+}
+
 // Query exécute equals/contains par recherche simple et les plages via le B-Tree.
 func (engine *Engine) Query(field FilterField, operator FilterOperator, expected string) ([]Entry, []Operation, error) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 
-	writes := engine.removeExpiredLocked()
+	writes := make([]Operation, 0)
+	if field != FilterKey && field != FilterValue {
+		if stored, ok := engine.state[string(field)]; ok && engine.removeIfExpiredLocked(string(field), stored) {
+			writes = append(writes, Operation{Type: CommandDelete, Key: string(field)})
+			return nil, writes, nil
+		}
+		entries, err := engine.querySchemaFieldLocked(string(field), operator, expected)
+		return entries, writes, err
+	}
+
 	if operator == OperatorEquals {
-		entries := engine.queryEqualsLocked(field, expected)
+		entries, expiredWrites := engine.queryEqualsLocked(field, expected)
+		writes = append(writes, expiredWrites...)
 		sortEntries(entries)
 		return entries, writes, nil
 	}
 
 	if operator == OperatorContains {
-		entries := engine.queryContainsLocked(field, expected)
+		entries, expiredWrites := engine.queryContainsLocked(field, expected)
+		writes = append(writes, expiredWrites...)
 		sortEntries(entries)
 		return entries, writes, nil
 	}
@@ -223,45 +303,74 @@ func (engine *Engine) Query(field FilterField, operator FilterOperator, expected
 		return nil, writes, fmt.Errorf("range filters only work on value")
 	}
 
-	target, err := strconv.ParseFloat(expected, 64)
+	target, err := numberValue(expected)
 	if err != nil {
 		return nil, writes, fmt.Errorf("range filter value must be a number")
 	}
 
-	keys := engine.numberIndex.Range(operator, target)
-	entries := make([]Entry, 0, len(keys))
-	for _, key := range keys {
-		stored, ok := engine.state[key]
-		if ok {
-			entries = append(entries, Entry{Key: key, Value: stored.Value})
+	items := engine.numberIndex.RangeItems(operator, target)
+	entries := make([]Entry, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		stored, ok := engine.state[item.Key]
+		if !ok || !isCurrentNumberItem(stored.Value, item) {
+			continue
 		}
+		if engine.removeIfExpiredLocked(item.Key, stored) {
+			writes = append(writes, Operation{Type: CommandDelete, Key: item.Key})
+			continue
+		}
+		if _, duplicate := seen[item.Key]; duplicate {
+			continue
+		}
+		seen[item.Key] = struct{}{}
+		entries = append(entries, Entry{Key: item.Key, Value: stored.Value})
 	}
 
 	sortEntries(entries)
 	return entries, writes, nil
 }
 
-func (engine *Engine) queryEqualsLocked(field FilterField, expected string) []Entry {
+func (engine *Engine) queryEqualsLocked(field FilterField, expected string) ([]Entry, []Operation) {
 	if field == FilterKey {
 		stored, ok := engine.state[expected]
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return []Entry{{Key: expected, Value: stored.Value}}
+		if engine.removeIfExpiredLocked(expected, stored) {
+			return nil, []Operation{{Type: CommandDelete, Key: expected}}
+		}
+		return []Entry{{Key: expected, Value: stored.Value}}, nil
 	}
 
 	keys := engine.equalsIndex[expected]
 	entries := make([]Entry, 0, len(keys))
+	writes := make([]Operation, 0)
 	for key := range keys {
-		entries = append(entries, Entry{Key: key, Value: engine.state[key].Value})
+		stored, ok := engine.state[key]
+		if !ok {
+			delete(keys, key)
+			continue
+		}
+		if engine.removeIfExpiredLocked(key, stored) {
+			writes = append(writes, Operation{Type: CommandDelete, Key: key})
+			continue
+		}
+		entries = append(entries, Entry{Key: key, Value: stored.Value})
 	}
-	return entries
+	return entries, writes
 }
 
-func (engine *Engine) queryContainsLocked(field FilterField, expected string) []Entry {
+func (engine *Engine) queryContainsLocked(field FilterField, expected string) ([]Entry, []Operation) {
+	expected = comparisonText(expected)
 	entries := make([]Entry, 0)
+	writes := make([]Operation, 0)
 	for key, stored := range engine.state {
-		text := stored.Value
+		if engine.removeIfExpiredLocked(key, stored) {
+			writes = append(writes, Operation{Type: CommandDelete, Key: key})
+			continue
+		}
+		text := comparisonText(stored.Value)
 		if field == FilterKey {
 			text = key
 		}
@@ -269,14 +378,49 @@ func (engine *Engine) queryContainsLocked(field FilterField, expected string) []
 			entries = append(entries, Entry{Key: key, Value: stored.Value})
 		}
 	}
-	return entries
+	return entries, writes
+}
+
+func (engine *Engine) querySchemaFieldLocked(key string, operator FilterOperator, expected string) ([]Entry, error) {
+	stored, ok := engine.state[key]
+	if !ok {
+		return nil, nil
+	}
+
+	if operator == OperatorEquals {
+		if stored.Value == expected {
+			return []Entry{{Key: key, Value: stored.Value}}, nil
+		}
+		return nil, nil
+	}
+
+	if operator == OperatorContains {
+		if strings.Contains(comparisonText(stored.Value), comparisonText(expected)) {
+			return []Entry{{Key: key, Value: stored.Value}}, nil
+		}
+		return nil, nil
+	}
+
+	target, err := numberValue(expected)
+	if err != nil {
+		return nil, fmt.Errorf("range filter value must be a number")
+	}
+
+	for _, item := range engine.numberIndex.RangeItems(operator, target) {
+		if item.Key == key && isCurrentNumberItem(stored.Value, item) {
+			return []Entry{{Key: key, Value: stored.Value}}, nil
+		}
+	}
+	return nil, nil
 }
 
 // SweepExpired est appelé périodiquement par le worker.
 func (engine *Engine) SweepExpired() []Operation {
 	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	return engine.removeExpiredLocked()
+	writes := engine.removeExpiredLocked()
+	engine.mu.Unlock()
+	engine.appendToBuffer(writes)
+	return writes
 }
 
 func (engine *Engine) removeExpiredLocked() []Operation {
@@ -284,12 +428,9 @@ func (engine *Engine) removeExpiredLocked() []Operation {
 	for key, stored := range engine.state {
 		if engine.isExpired(stored) {
 			delete(engine.state, key)
+			engine.removeFromEqualsIndexLocked(key, stored.Value)
 			writes = append(writes, Operation{Type: CommandDelete, Key: key})
 		}
-	}
-
-	if len(writes) > 0 {
-		engine.rebuildIndexesLocked()
 	}
 	return writes
 }
@@ -298,8 +439,18 @@ func (engine *Engine) isExpired(stored StoredValue) bool {
 	return stored.ExpiresAt > 0 && stored.ExpiresAt <= engine.now().UnixMilli()
 }
 
-// Pour garder une première version lisible, les index sont reconstruits après
-// chaque écriture. On pourra ajouter une suppression B-Tree optimisée plus tard.
+func (engine *Engine) removeIfExpiredLocked(key string, stored StoredValue) bool {
+	if !engine.isExpired(stored) {
+		return false
+	}
+
+	delete(engine.state, key)
+	engine.removeFromEqualsIndexLocked(key, stored.Value)
+	return true
+}
+
+// Cette reconstruction complète sert au restore. Les écritures normales mettent
+// seulement à jour les éléments concernés avec updateIndexesLocked.
 func (engine *Engine) rebuildIndexesLocked() {
 	engine.equalsIndex = map[string]map[string]struct{}{}
 	engine.numberIndex = NewBTree(engine.btreeDegree)
@@ -312,11 +463,57 @@ func (engine *Engine) rebuildIndexesLocked() {
 		}
 		keys[key] = struct{}{}
 
-		value, err := strconv.ParseFloat(stored.Value, 64)
+		value, err := numberValue(stored.Value)
 		if err == nil {
 			engine.numberIndex.Insert(BTreeItem{Value: value, Key: key})
 		}
 	}
+}
+
+func (engine *Engine) updateIndexesLocked(key string, previous StoredValue, hadPrevious bool, stored StoredValue) {
+	if hadPrevious {
+		engine.removeFromEqualsIndexLocked(key, previous.Value)
+	}
+
+	keys := engine.equalsIndex[stored.Value]
+	if keys == nil {
+		keys = map[string]struct{}{}
+		engine.equalsIndex[stored.Value] = keys
+	}
+	keys[key] = struct{}{}
+
+	if value, err := numberValue(stored.Value); err == nil {
+		engine.numberIndex.Insert(BTreeItem{Value: value, Key: key})
+	}
+}
+
+func (engine *Engine) removeFromEqualsIndexLocked(key string, value string) {
+	keys := engine.equalsIndex[value]
+	delete(keys, key)
+	if len(keys) == 0 {
+		delete(engine.equalsIndex, value)
+	}
+}
+
+func isCurrentNumberItem(value string, item BTreeItem) bool {
+	current, err := numberValue(value)
+	return err == nil && current == item.Value
+}
+
+func numberValue(value string) (float64, error) {
+	if strings.HasPrefix(value, "n:") {
+		value = strings.TrimPrefix(value, "n:")
+	}
+	return strconv.ParseFloat(value, 64)
+}
+
+func comparisonText(value string) string {
+	for _, prefix := range []string{"s:", "n:", "b:", "j:"} {
+		if strings.HasPrefix(value, prefix) {
+			return strings.TrimPrefix(value, prefix)
+		}
+	}
+	return value
 }
 
 func (engine *Engine) ExecuteBatch(commands []string) BatchResult {
@@ -332,7 +529,7 @@ func (engine *Engine) ExecuteBatch(commands []string) BatchResult {
 		writes = append(writes, commandWrites...)
 	}
 
-	return BatchResult{Results: results, Writes: writes}
+	return BatchResult{Results: results, Writes: writes, BufferSize: engine.BufferSize()}
 }
 
 func sortEntries(entries []Entry) {
