@@ -1,68 +1,111 @@
 # WasmRedis
 
-WasmRedis est une petite base cle-valeur ecrite en Go et executee dans le
-navigateur grace a WebAssembly.
+WasmRedis est une petite base de donnees `cle -> valeur`. Le moteur est ecrit
+en Go, compile en WebAssembly et execute dans un Web Worker. React reste sur le
+thread principal et ne touche jamais directement aux fichiers.
 
-Le projet reste volontairement simple : le but est de comprendre le trajet
-d'une commande, de React jusqu'au moteur Go, puis jusqu'a la persistance OPFS.
+Le projet cherche surtout a montrer clairement le fonctionnement de Redis dans
+le navigateur, sans serveur et sans architecture inutilement compliquee.
 
 ## Ce qui fonctionne
 
-- moteur cle-valeur en Go
-- commandes `SET`, `GET`, `DELETE`, `ALL` et `GET WHERE`
-- TTL avec expiration a la lecture et balayage periodique
-- index inverse pour `equals`
-- B-Tree pour les filtres numeriques `>`, `>=`, `<` et `<=`
-- batch de commandes
-- compilation Go vers WebAssembly
-- Web Worker pour ne pas bloquer React
-- AOF et snapshot dans OPFS
-- SDK TypeScript avec validation Zod
-- query builder fonctionnel `get().where().exec()`
-- UI React CRUD avec filtre et seed
-- virtual scroll code a la main
-- store externe par ligne pour le render granulaire
-- benchmark Go et benchmark depuis le navigateur
+- `SET`, `GET`, `DELETE`, `ALL` et `GET WHERE`
+- filtres `equals`, `contains`, `>`, `>=`, `<` et `<=`
+- index inverse pour `equals` et B-Tree Go pour les plages numeriques
+- TTL lazy au `GET` et balayage periodique des expirations
+- batch de commandes sans interleaving cote moteur
+- buffer d'ecritures dans le moteur Go
+- AOF, snapshot et restore dans OPFS
+- SDK TypeScript fonctionnel, generique et valide avec Zod
+- React CRUD, virtual scroll maison et abonnement par ligne
+- benchmarks Go et navigateur
+- dataset de 100 000 entrees fourni sans chargement automatique
 
 ## Architecture
 
 ```text
 React
-  -> SDK TypeScript
-  -> Web Worker
-  -> moteur Go compile en WASM
-  -> state en RAM + index
-  -> buffer AOF
-  -> OPFS : aof.log + snapshot.json
+  -> SDK TypeScript : validation + commandes
+  -> Web Worker : orchestration et OPFS
+  -> moteur Go/WASM
+       |- state en RAM
+       |- buffer d'operations
+       |- index equals
+       `- B-Tree numerique
+            |
+            `-> OPFS : aof.log + snapshot.json
 ```
 
-## Structure
+## Comprendre le trajet d'un SET
+
+1. React appelle `db.set("age", 25)`.
+2. Le SDK valide la cle et la valeur, puis cree `SET age "n:25"`.
+3. Le SDK envoie la commande au Web Worker avec `postMessage`.
+4. Le parser Go transforme le texte en `Command`.
+5. Le moteur met `age` dans le `state`, met a jour le B-Tree et ajoute une
+   operation dans son buffer.
+6. Environ une fois par seconde, le worker vide le buffer Go vers `aof.log`.
+7. Environ toutes les deux minutes, il ecrit tout le state dans
+   `snapshot.json`, puis vide l'AOF.
+
+Au redemarrage, le snapshot est charge en premier, puis les operations plus
+recentes de l'AOF sont rejouees. Les dates de TTL sont conservees exactement.
+
+## Structure du depot
 
 ```text
-internal/redis/       moteur, parser, TTL et B-Tree
-cmd/cli/              test manuel dans le terminal
-cmd/wasm/             pont entre Go et JavaScript
-scripts/build-wasm.sh build du fichier WASM
+internal/redis/       moteur, parser, TTL, buffer et B-Tree
+cmd/cli/              essai manuel dans le terminal
+cmd/wasm/             pont JavaScript <-> Go
 web/src/sdk/          SDK TypeScript
-web/src/worker/       Worker, buffer et OPFS
+web/src/worker/       Worker et persistance OPFS
 web/src/store/        abonnements React par ligne
-web/src/benchmark/    mesures dans le navigateur
-web/src/App.tsx       interface React
+web/src/virtual/      calcul du virtual scroll
+web/src/benchmark/    mesures navigateur et FPS
+demo-data/            dataset 100 000 entrees
+scripts/              build WASM et generation du dataset
+presentation/         support de presentation et notes
 ```
 
-## Tester le moteur Go
+## Installation et lancement
+
+Prerequis : Go 1.22 ou plus recent et Node.js 22.
 
 ```bash
-go test ./...
+cd web
+npm install
+npm run dev
 ```
 
-Lancer le petit terminal :
+Ouvrir ensuite :
+
+```text
+http://localhost:5173/
+```
+
+Pour vider OPFS une seule fois au demarrage :
+
+```text
+http://localhost:5173/?reset=1
+```
+
+Le seed reste volontairement a 100 entrees par defaut pour les petits PC.
+
+## Tester
+
+Depuis la racine :
 
 ```bash
-go run ./cmd/cli
+go test -race ./...
+cd web
+npm test
+npm run build
 ```
 
-Commandes utiles :
+Le build execute aussi `scripts/build-wasm.sh`, qui copie le runtime Go et
+compile `cmd/wasm` en `web/public/wasmredis.wasm`.
+
+## Commandes du moteur
 
 ```text
 SET name "matt"
@@ -71,120 +114,80 @@ GET name
 DELETE name
 ALL
 GET WHERE key contains "demo:"
-GET WHERE value equals "25"
-GET WHERE value >= 18
+GET WHERE value equals "n:25"
+GET WHERE value >= n:18
 ```
 
-Notre base est plate : une entree contient une `key` et une `value`. Pour cette
-version, `GET WHERE` accepte donc ces deux noms de champ. Les comparaisons de
-plage fonctionnent uniquement sur une `value` numerique.
-
-## Lancer l'interface
-
-Dans WSL :
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-Puis ouvrir :
-
-```text
-http://localhost:5173
-```
-
-Si le terminal choisit le npm de Windows, recharger la configuration WSL :
-
-```bash
-source ~/.bashrc
-```
-
-L'interface permet de :
-
-- ajouter ou modifier une entree
-- donner un TTL optionnel en secondes
-- supprimer une entree
-- filtrer par cle ou valeur
-- ajouter 100 valeurs numeriques avec `Seed 100`
-- forcer le flush AOF
-- vider toute la base
-- lancer un petit benchmark
-
-Cette URL vide OPFS avant le demarrage :
-
-```text
-http://localhost:5173/?reset=1
-```
+Le prefixe `n:` est ajoute automatiquement par le SDK aux nombres. Le CLI Go
+accepte aussi les nombres simples comme `18`.
 
 ## SDK TypeScript
 
 ```ts
-type Schema = Record<string, string>;
+type Schema = { name: string; age: number };
 
 const db = await initWasmRedis<Schema>();
 
-await db.set("session", "active", { ex: 60 });
+await db.set("name", "matt");
+await db.set("age", 25, { ex: 60 });
 
-const adults = await db
+const result = await db
   .get()
-  .where("value", ">=", 18)
+  .where("age", ">", 18)
+  .where("name", "contains", "ma")
   .exec();
 ```
 
-Plusieurs `where` peuvent etre chaines. Le SDK execute les filtres puis garde
-les cles presentes dans tous les resultats.
+TypeScript refuse par exemple `where("age", "contains", 18)` ou une valeur
+texte pour `age`. Ce contrat est verifie pendant le build dans
+`web/src/sdk/wasmRedis.typecheck.ts`.
 
-## TTL
+Le stockage reste plat : `name` et `age` sont deux cles de la base, pas les
+champs de plusieurs documents. Dans une chaine de filtres sur le schema, tous
+les predicats doivent etre vrais pour obtenir les entrees correspondantes.
 
-`SET session "active" EX 60` calcule une date d'expiration dans le moteur Go.
+## Virtual scroll et render granulaire
 
-- expiration lazy : `GET` supprime une cle deja expiree
-- expiration active : le Worker demande regulierement a Go de balayer les cles
-- la suppression est ajoutee a l'AOF
-- le snapshot conserve la date d'expiration
+La liste complete est representee par un spacer, mais React ne monte que les
+lignes visibles avec une petite marge. Avec les valeurs par defaut, le test sur
+100 000 entrees ne garde jamais plus de 29 lignes a afficher.
 
-## B-Tree
+Chaque ligne s'abonne uniquement a sa cle avec `useSyncExternalStore`. Le test
+automatise et le compteur orange prouvent qu'une modification notifie la ligne
+cible sans re-rendre les autres lignes.
 
-Les valeurs numeriques sont ajoutees dans un B-Tree Go. Une commande comme
-`GET WHERE value >= 18` lit cet index au lieu de parcourir la map principale.
+Le fichier `demo-data/demo-100000.ndjson` contient bien 100 000 entrees, mais il
+n'est jamais importe au demarrage. Pour regenerer ce fichier :
 
-Pour garder l'implementation lisible, le B-Tree et l'index `equals` sont
-reconstruits apres chaque ecriture. C'est correct pour la petite demo ; une
-version tres volumineuse devrait mettre les index a jour element par element.
-
-## Render granulaire
-
-Le virtual scroll ne monte que les lignes visibles. En plus, chaque ligne
-s'abonne a sa propre cle avec `useSyncExternalStore`. Modifier une valeur ne
-notifie donc que sa ligne. Le compteur orange visible dans la ligne permet de
-le verifier.
+```bash
+node scripts/generate-demo-data.mjs 100000
+```
 
 ## Configuration
 
-Toutes les valeurs ajustables sont documentees dans `.env.example`. Pour les
-surcharger, creer un fichier `.env` a la racine du projet.
+Toutes les valeurs ajustables sont documentees dans `.env.example`. Copier les
+variables voulues dans un fichier `.env` a la racine. Vite lit ce dossier grace
+a `envDir: ".."`.
 
-On peut notamment regler les intervalles de flush, snapshot et balayage TTL,
-le TTL par defaut, le degre du B-Tree, le seed, le virtual scroll et le nombre
-d'iterations du benchmark.
+On peut regler les intervalles de flush, snapshot et balayage TTL, la taille du
+buffer, le TTL par defaut, le degre du B-Tree, les fichiers OPFS, la taille du
+seed, la fenetre du virtual scroll et les benchmarks.
 
 ## Benchmarks
 
-Voir [BENCHMARK.md](BENCHMARK.md).
+Le rapport et la methode sont dans [BENCHMARK.md](BENCHMARK.md).
 
 ```bash
-go test -bench=. -benchmem ./internal/redis
+go test -bench=. -benchmem -benchtime=300ms -count=1 ./internal/redis
 ```
 
-Le bouton `Benchmark` mesure aussi le vrai trajet SDK -> Worker -> WASM dans le
-navigateur et affiche les p50 / p95.
+Le bouton `Benchmark` mesure le trajet complet SDK -> Worker -> WASM et le FPS
+du scroll. Il affiche les latences p50/p95, le gain du batch et le restore OPFS.
 
-## Limites connues
+## Limites assumees
 
-- le modele reste une base plate `key -> value`, pas un stockage de documents
-- la suppression B-Tree est remplacee par une reconstruction simple
-- le test a un million d'entrees n'est pas adapte au petit PC de developpement
-- le FPS du scroll et le temps de restore restent a relever manuellement
-- la presentation finale reste a terminer
+- le modele est une base plate et non une base de documents
+- une suppression numerique reconstruit le B-Tree pour rester simple et juste
+- le bonus de synchronisation entre plusieurs onglets n'est pas implemente
+- le dataset 100k est fourni, mais n'est pas charge automatiquement sur ce PC
+- les chiffres du navigateur dependent de la machine et doivent etre re-mesures
