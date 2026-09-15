@@ -1,5 +1,6 @@
 import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runBenchmark } from "./benchmark/runBenchmark";
+import { measureScrollFps } from "./benchmark/measureScrollFps";
 import { FilterField, FilterOperator, initWasmRedis, WasmRedis } from "./sdk/wasmRedis";
 import {
   clearEntries,
@@ -10,17 +11,21 @@ import {
   useEntry,
   useEntryKeys,
 } from "./store/entryStore";
+import { getVirtualRange } from "./virtual/getVirtualRange";
 
-type Schema = Record<string, string>;
+type Schema = Record<string, string | number>;
 
 const rowHeight = readNumberEnv("VITE_WASMREDIS_VIRTUAL_ROW_HEIGHT", 42);
 const overscan = readNumberEnv("VITE_WASMREDIS_VIRTUAL_OVERSCAN", 8);
+const virtualViewportHeight = readNumberEnv("VITE_WASMREDIS_VIRTUAL_VIEWPORT_HEIGHT", 520);
 const demoEntryCount = readNumberEnv("VITE_WASMREDIS_DEMO_ENTRY_COUNT", 100);
 const demoChunkSize = readNumberEnv("VITE_WASMREDIS_DEMO_CHUNK_SIZE", 25);
 const benchmarkIterations = readNumberEnv("VITE_WASMREDIS_BENCHMARK_ITERATIONS", 30);
+const scrollBenchmarkDurationMs = readNumberEnv("VITE_WASMREDIS_SCROLL_BENCHMARK_DURATION_MS", 1000);
 
 export function App() {
   const dbRef = useRef<WasmRedis<Schema> | null>(null);
+  const virtualListRef = useRef<HTMLDivElement | null>(null);
   const entryKeys = useEntryKeys();
   const [ready, setReady] = useState(false);
   const [key, setKey] = useState("");
@@ -109,7 +114,12 @@ export function App() {
     }
 
     try {
-      const results = await db.get().where(filterField, filterOperator, filterValue).exec();
+      const wantedValue = isRangeOperator(filterOperator) ? Number(filterValue) : filterValue;
+      if (typeof wantedValue === "number" && !Number.isFinite(wantedValue)) {
+        setStatus("La valeur du filtre doit etre un nombre");
+        return;
+      }
+      const results = await db.get().where(filterField, filterOperator, wantedValue).exec();
       replaceEntries(results.map((entry) => ({ key: entry.key, value: String(entry.value) })));
       setStatus(`${results.length} resultat(s)`);
     } catch (error) {
@@ -124,13 +134,13 @@ export function App() {
     }
 
     setStatus("Creation du jeu de donnees...");
-    const commands = Array.from({ length: demoEntryCount }, (_, index) =>
-      db.cmd.set(`demo:${index}`, String(index)),
-    );
-
-    for (let start = 0; start < commands.length; start += demoChunkSize) {
-      await db.batch(commands.slice(start, start + demoChunkSize));
-      setStatus(`Creation... ${Math.min(start + demoChunkSize, commands.length)}/${demoEntryCount}`);
+    for (let start = 0; start < demoEntryCount; start += demoChunkSize) {
+      const end = Math.min(start + demoChunkSize, demoEntryCount);
+      const commands = Array.from({ length: end - start }, (_, offset) =>
+        db.cmd.set(`demo:${start + offset}`, start + offset),
+      );
+      await db.batch(commands);
+      setStatus(`Creation... ${end}/${demoEntryCount}`);
     }
 
     await db.flush();
@@ -146,7 +156,13 @@ export function App() {
 
     setStatus("Benchmark en cours...");
     const report = await runBenchmark(db, benchmarkIterations);
-    setBenchmarkLines(report.lines);
+    const fps = virtualListRef.current
+      ? await measureScrollFps(virtualListRef.current, scrollBenchmarkDurationMs)
+      : null;
+    setBenchmarkLines([
+      ...report.lines,
+      fps === null ? "FPS scroll : liste trop courte" : `FPS scroll : ${fps.toFixed(1)}`,
+    ]);
     await loadEntries();
     setStatus(`Benchmark termine (${report.iterations} iterations)`);
   };
@@ -235,20 +251,25 @@ export function App() {
             <button disabled={!ready} type="button" onClick={loadEntries}>Recharger</button>
           </div>
         </div>
-        <VirtualList entryKeys={entryKeys} onEdit={editEntry} onDelete={deleteEntry} />
+        <VirtualList
+          containerRef={virtualListRef}
+          entryKeys={entryKeys}
+          onEdit={editEntry}
+          onDelete={deleteEntry}
+        />
       </section>
     </main>
   );
 }
 
 type VirtualListProps = {
+  containerRef: React.RefObject<HTMLDivElement | null>;
   entryKeys: string[];
   onEdit: (entry: StoreEntry) => void;
   onDelete: (key: string) => void;
 };
 
-const VirtualList = memo(function VirtualList({ entryKeys, onEdit, onDelete }: VirtualListProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+const VirtualList = memo(function VirtualList({ containerRef, entryKeys, onEdit, onDelete }: VirtualListProps) {
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(520);
 
@@ -264,20 +285,29 @@ const VirtualList = memo(function VirtualList({ entryKeys, onEdit, onDelete }: V
     return () => observer.disconnect();
   }, []);
 
-  const totalHeight = entryKeys.length * rowHeight;
-  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
-  const visibleCount = Math.ceil(height / rowHeight) + overscan * 2;
-  const endIndex = Math.min(entryKeys.length, startIndex + visibleCount);
+  const { startIndex, endIndex, totalHeight } = getVirtualRange({
+    itemCount: entryKeys.length,
+    rowHeight,
+    viewportHeight: height,
+    scrollTop,
+    overscan,
+  });
   const visibleKeys = useMemo(() => entryKeys.slice(startIndex, endIndex), [entryKeys, startIndex, endIndex]);
 
   return (
-    <div ref={containerRef} className="virtual-list" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+    <div
+      ref={containerRef}
+      className="virtual-list"
+      style={{ height: virtualViewportHeight }}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
       <div className="virtual-spacer" style={{ height: totalHeight }}>
         {visibleKeys.map((entryKey, index) => (
           <EntryRow
             key={entryKey}
             entryKey={entryKey}
             top={(startIndex + index) * rowHeight}
+            height={rowHeight}
             onEdit={onEdit}
             onDelete={onDelete}
           />
@@ -290,11 +320,12 @@ const VirtualList = memo(function VirtualList({ entryKeys, onEdit, onDelete }: V
 type EntryRowProps = {
   entryKey: string;
   top: number;
+  height: number;
   onEdit: (entry: StoreEntry) => void;
   onDelete: (key: string) => void;
 };
 
-const EntryRow = memo(function EntryRow({ entryKey, top, onEdit, onDelete }: EntryRowProps) {
+const EntryRow = memo(function EntryRow({ entryKey, top, height, onEdit, onDelete }: EntryRowProps) {
   const entry = useEntry(entryKey);
   const renderCount = useRef(0);
   renderCount.current += 1;
@@ -304,7 +335,7 @@ const EntryRow = memo(function EntryRow({ entryKey, top, onEdit, onDelete }: Ent
   }
 
   return (
-    <div className="entry-row" style={{ transform: `translateY(${top}px)` }}>
+    <div className="entry-row" style={{ height, transform: `translateY(${top}px)` }}>
       <span className="cell key-cell">{entry.key}</span>
       <span className="cell value-cell">{entry.value}</span>
       <span className="render-count">{renderCount.current}</span>

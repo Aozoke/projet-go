@@ -54,25 +54,29 @@ export function clearEntries(): void {
 }
 
 export function useEntryKeys(): string[] {
-  return useSyncExternalStore(subscribeList, getKeys, getKeys);
+  return useSyncExternalStore(subscribeEntryKeys, getEntryKeys, getEntryKeys);
 }
 
 export function useEntry(key: string): StoreEntry | undefined {
-  const subscribe = useCallback((listener: Listener) => subscribeRow(key, listener), [key]);
-  const getSnapshot = useCallback(() => entries.get(key), [key]);
+  const subscribe = useCallback((listener: Listener) => subscribeEntry(key, listener), [key]);
+  const getSnapshot = useCallback(() => getEntry(key), [key]);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-function subscribeList(listener: Listener): () => void {
+export function subscribeEntryKeys(listener: Listener): () => void {
   listListeners.add(listener);
   return () => listListeners.delete(listener);
 }
 
-function getKeys(): string[] {
+export function getEntryKeys(): string[] {
   return keys;
 }
 
-function subscribeRow(key: string, listener: Listener): () => void {
+export function getEntry(key: string): StoreEntry | undefined {
+  return entries.get(key);
+}
+
+export function subscribeEntry(key: string, listener: Listener): () => void {
   const listeners = rowListeners.get(key) ?? new Set<Listener>();
   listeners.add(listener);
   rowListeners.set(key, listeners);

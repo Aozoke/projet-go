@@ -1,6 +1,6 @@
 import { WasmRedis } from "../sdk/wasmRedis";
 
-type BenchmarkSchema = Record<string, string>;
+type BenchmarkSchema = Record<string, string | number>;
 
 export type BenchmarkReport = {
   iterations: number;
@@ -15,29 +15,37 @@ export async function runBenchmark(
   const sequentialKeys = Array.from({ length: iterations }, (_, index) => `${prefix}:single:${index}`);
   const batchKeys = Array.from({ length: iterations }, (_, index) => `${prefix}:batch:${index}`);
 
-  const setTimes = await measureMany(sequentialKeys, (key, index) => db.set(key, String(index)));
+  const setTimes = await measureMany(sequentialKeys, (key, index) => db.set(key, index));
   const getTimes = await measureMany(sequentialKeys, (key) => db.get(key));
   await db.batch(sequentialKeys.map((key) => db.cmd.delete(key)));
 
   const batchStart = performance.now();
-  await db.batch(batchKeys.map((key, index) => db.cmd.set(key, String(index))));
+  await db.batch(batchKeys.map((key, index) => db.cmd.set(key, index)));
   const batchDuration = performance.now() - batchStart;
 
   const queryRuns = Math.min(10, iterations);
+  const equalsTimes = await measureRepeated(queryRuns, () =>
+    db.get().where("value", "equals", Math.floor(iterations / 2)).exec(),
+  );
   const rangeTimes = await measureRepeated(queryRuns, () => db.get().where("value", ">=", iterations / 2).exec());
   const containsTimes = await measureRepeated(queryRuns, () => db.get().where("value", "contains", "1").exec());
 
   await db.batch(batchKeys.map((key) => db.cmd.delete(key)));
+  const restore = await db.metrics();
 
   return {
     iterations,
     lines: [
       formatLatency("SET un par un", setTimes),
       formatLatency("GET par cle", getTimes),
+      formatLatency("GET WHERE equals", equalsTimes),
       formatLatency("GET WHERE range (B-Tree)", rangeTimes),
       formatLatency("GET WHERE contains", containsTimes),
       `Batch de ${iterations} SET : ${batchDuration.toFixed(2)} ms au total`,
       `Gain batch : ${(sum(setTimes) / Math.max(batchDuration, 0.01)).toFixed(1)}x sur ce test`,
+      `Restore snapshot : ${restore.snapshotMs.toFixed(2)} ms`,
+      `Restore AOF (${restore.aofOperationCount} operations) : ${restore.aofMs.toFixed(2)} ms`,
+      `Restore total : ${restore.totalMs.toFixed(2)} ms`,
     ],
   };
 }
