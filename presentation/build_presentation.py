@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "presentation"
-PPTX_PATH = OUT / "wasmredis-presentation(2).pptx"
+PPTX_PATH = OUT / "wasmredis-presentation_2.pptx"
 PDF_PATH = OUT / "wasmredis-presentation(2).pdf"
 NOTES_PATH = OUT / "notes-orales(2).md"
 
@@ -59,7 +59,7 @@ def snippet(path: str, marker: str, count: int) -> Snippet:
     lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
     start = next(index for index, line in enumerate(lines) if marker in line)
     selected = lines[start : start + count]
-    if len(selected) > 15:
+    if len(selected) > 12:
         raise ValueError(f"Extrait trop long : {path}")
     return Snippet(path, start + 1, selected)
 
@@ -79,9 +79,17 @@ def compact_function(path: str, marker: str) -> Snippet:
         if depth == 0:
             break
 
-    if len(selected) > 15:
+    if len(selected) > 12:
         raise ValueError(f"Extrait trop long : {path}")
     return Snippet(path, start + 1, selected, numbers)
+
+
+def picked_snippet(path: str, line_numbers: list[int]) -> Snippet:
+    source = (ROOT / path).read_text(encoding="utf-8").splitlines()
+    selected = [source[number - 1] for number in line_numbers]
+    if len(selected) > 12:
+        raise ValueError(f"Extrait trop long : {path}")
+    return Snippet(path, line_numbers[0], selected, line_numbers)
 
 
 SLIDES = [
@@ -109,62 +117,93 @@ SLIDES = [
         ),
     },
     {
+        "kind": "bridge",
+        "title": "React atteint le moteur Go",
+        "subtitle": "SDK, Worker et WASM transportent la commande",
+        "snippets": [compact_function("cmd/wasm/main.go", "func wasmRedisExecute")],
+        "takeaways": [
+            "Le SDK valide, puis le worker appelle le bridge Go/WASM.",
+            "OPFS impose le Worker : ses Sync Access Handles n'existent pas sur le main thread.",
+        ],
+        "note": (
+            "Le schema montre le trajet depuis React jusqu'au moteur. La fonction affichee est le "
+            "point d'entree Go expose a JavaScript : wasmRedisExecute verifie la requete, decode le "
+            "JSON puis appelle Engine.ExecuteBatch. Le moteur et les acces OPFS restent dans le "
+            "worker car les Sync Access Handles ne sont pas disponibles sur le main thread."
+        ),
+    },
+    {
         "kind": "code",
         "title": "Le parser protege l'entree",
         "subtitle": "Du texte vers une commande Go valide",
-        "snippets": [snippet("internal/redis/parser.go", "switch CommandType(commandName)", 8)],
+        "snippets": [picked_snippet("internal/redis/parser.go", [35, 38, 41, 44, 47, 48, 49, 50, 51, 66, 67, 68])],
         "takeaways": [
             "GET WHERE est distingue d'un GET par cle.",
             "Toute commande inconnue est rejetee avant le moteur.",
         ],
         "note": (
-            "Le parser recoit une string. Le switch choisit la seule fonction capable de parser "
-            "cette commande. Dans le cas GET, je regarde si le mot suivant est WHERE. Les erreurs "
-            "sont renvoyees proprement, donc aucune entree brute n'arrive dans le state."
+            "ParseCommand nettoie le texte puis lit le nom de commande. L'extrait garde la decision "
+            "la plus interessante : pour GET, le parser distingue GET WHERE d'une lecture par cle. "
+            "Le default montre aussi qu'une commande inconnue est rejetee avant le moteur."
         ),
     },
     {
         "kind": "engine",
         "title": "Du texte au state",
-        "subtitle": "ExecuteText relie le parser aux actions du moteur",
-        "snippets": [
-            snippet("internal/redis/engine.go", "type Engine struct", 8),
-            snippet("internal/redis/engine.go", "func (engine *Engine) ExecuteText", 14),
-        ],
+        "subtitle": "Le moteur choisit l'action et produit les ecritures",
+        "snippets": [picked_snippet("internal/redis/engine.go", [181, 182, 183, 184, 192, 193, 201, 208, 209, 210, 217])],
         "takeaways": [
-            "Set, Get et Delete travaillent sur state.",
-            "Execute ajoute seulement les ecritures au buffer.",
+            "Le switch relie chaque CommandType a Set, Get ou Delete sur state.",
+            "Les ecritures renvoient une Operation qui sera ajoutee au buffer.",
         ],
         "note": (
-            "La structure Engine garde state, la base vivante en RAM, et buffer, la file des "
-            "ecritures a persister. ExecuteText transforme le texte avec ParseCommand puis appelle "
-            "Execute. Execute dirige la commande vers Set, Get ou Delete et ajoute les operations "
-            "d'ecriture au buffer."
+            "La fonction execute contient la decision importante : son switch choisit Set, Get ou "
+            "Delete. Set et Delete modifient state et renvoient une Operation a persister, alors que "
+            "Get renvoie seulement la valeur. Execute ajoutera ensuite ces operations au buffer. "
+            "Les numeros de ligne sautent car seuls les trois cas utiles sont affiches."
         ),
     },
     {
         "kind": "persistence",
-        "title": "Du buffer au restore",
-        "subtitle": "AOF pour le journal, snapshot pour la photo complete",
+        "title": "AOF + snapshot : restaurer l'etat",
+        "subtitle": "Le snapshot est charge avant le rejeu du journal",
         "snippets": [
-            snippet("internal/redis/engine.go", "func (engine *Engine) DrainBuffer", 9),
-            snippet("web/src/worker/wasmRedis.worker.ts", "function saveSnapshot", 12),
+            picked_snippet(
+                "web/src/worker/wasmRedis.worker.ts",
+                [310, 313, 314, 315, 316, 320, 321, 322, 324, 325, 331, 332],
+            )
         ],
         "takeaways": [
-            "DrainBuffer remet la file Go a zero sous mutex.",
-            "saveSnapshot ecrit le state puis compacte l'AOF.",
+            "Au demarrage : snapshot d'abord, puis operations AOF rejouees dans l'ordre.",
+            "Tout vient de .env, ex. VITE_WASMREDIS_FLUSH_INTERVAL_MS=1000.",
         ],
         "note": (
-            "DrainBuffer copie les operations sous mutex puis vide la file du moteur. "
-            "saveSnapshot attend les ecritures AOF, recupere le state Go, ecrit snapshot.json "
-            "et vide aof.log. Au demarrage, le worker recharge le snapshot puis rejoue l'AOF."
+            "restoreFromOpfs est la fonction centrale du redemarrage. Elle lit snapshot.json et le "
+            "charge dans Go, puis lit aof.log, reconstruit les operations valides et les rejoue. "
+            "Les lignes de validation secondaire sont coupees, mais chaque ligne visible vient du "
+            "fichier indique. Les intervalles et tailles sont fournis par le fichier .env."
+        ),
+    },
+    {
+        "kind": "code",
+        "title": "Un batch, un seul passage",
+        "subtitle": "Les commandes restent ordonnees et sans interleaving",
+        "snippets": [compact_function("internal/redis/engine.go", "func (engine *Engine) ExecuteBatch")],
+        "takeaways": [
+            "batchMu verrouille tout le lot et les resultats restent alignes aux commandes.",
+            "Mesure du projet : 15,5x plus rapide pour 30 SET regroupes.",
+        ],
+        "note": (
+            "ExecuteBatch prend un verrou pour qu'aucun autre batch ne s'intercale. La boucle execute "
+            "chaque commande dans l'ordre, ajoute son resultat au meme index logique et rassemble les "
+            "ecritures. Le benchmark mesure 15,5 fois moins de cout pour trente SET regroupes."
         ),
     },
     {
         "kind": "code",
         "title": "Les plages passent par le B-Tree",
         "subtitle": "Le parcours s'arrete des que la limite est depassee",
-        "snippets": [snippet("internal/redis/btree.go", "if operator == OperatorLessThan", 9)],
+        "snippets": [snippet("internal/redis/btree.go", "func (tree *BTree) RangeItems", 12)],
         "takeaways": [
             "equals utilise un index inverse ; contains assume un scan.",
             "Une plage selective reste a environ 0,3 us jusqu'a 10 000 entrees.",
@@ -188,25 +227,6 @@ SLIDES = [
             "Une valeur garde une date ExpiresAt. Si elle est depassee, cette fonction retire la cle "
             "du state et des deux index. L'appelant cree ensuite une operation DELETE pour l'AOF. "
             "Une horloge injectable rend ce comportement testable sans attendre."
-        ),
-    },
-    {
-        "kind": "bridge",
-        "title": "React atteint le moteur Go",
-        "subtitle": "Le SDK et le bridge WASM transportent la commande",
-        "snippets": [
-            snippet("web/src/sdk/wasmRedis.ts", "pending.set(id", 3),
-            compact_function("cmd/wasm/main.go", "func wasmRedisExecute"),
-        ],
-        "takeaways": [
-            "Le SDK valide avec TypeScript et Zod avant l'envoi.",
-            "wasmRedisExecute decode puis appelle Engine.ExecuteBatch.",
-        ],
-        "note": (
-            "pending.set memorise la promesse associee a l'identifiant, puis worker.postMessage "
-            "envoie la requete au worker. "
-            "wasmRedisExecute est la fonction Go exposee a JavaScript : elle verifie l'argument, "
-            "decode le JSON et transmet les commandes a Engine.ExecuteBatch."
         ),
     },
     {
@@ -286,7 +306,6 @@ def ppt_background(slide):
 def ppt_header(slide, data, index):
     ppt_text(slide, data["title"], Inches(0.55), Inches(0.28), Inches(10.8), Inches(0.42), 25, TEXT, True)
     ppt_text(slide, data["subtitle"], Inches(0.57), Inches(0.77), Inches(10.8), Inches(0.28), 11.5, MUTED)
-    ppt_rect(slide, Inches(0.56), Inches(1.10), Inches(1.18), Inches(0.05), ORANGE)
     ppt_text(slide, f"{index:02d}", Inches(12.35), Inches(0.35), Inches(0.4), Inches(0.25), 10, MUTED, True)
 
 
@@ -300,6 +319,11 @@ def code_size(snippets, width_inches, height_inches):
     by_width = width_inches * 72 / max(longest * 0.60, 1)
     by_height = height_inches * 72 / max(len(lines) * 1.25, 1)
     return max(8.5, min(15, by_width, by_height))
+
+
+def ppt_code_height(snippets):
+    line_count = len(code_text(snippets).splitlines())
+    return Inches(min(4.25, max(2.25, 0.92 + line_count * 0.22)))
 
 
 def ppt_code_panel(slide, snippets, left, top, width, height):
@@ -321,14 +345,22 @@ def ppt_code_panel(slide, snippets, left, top, width, height):
 
 
 def ppt_code(slide, snippets):
+    height = ppt_code_height(snippets)
+    top = Inches(1.40 + (4.68 - height.inches) / 2)
     ppt_code_panel(
         slide,
         snippets,
         Inches(0.55),
-        Inches(1.42),
+        top,
         Inches(12.22),
-        Inches(4.70),
+        height,
     )
+
+
+def ppt_code_after_flow(slide, snippets):
+    height = ppt_code_height(snippets)
+    top = Inches(2.28 + (3.78 - height.inches) / 2)
+    ppt_code_panel(slide, snippets, Inches(0.55), top, Inches(12.22), height)
 
 
 def ppt_stage_flow(slide, labels, colors, top):
@@ -362,12 +394,11 @@ def ppt_engine(slide, data, index):
     ppt_header(slide, data, index)
     ppt_stage_flow(
         slide,
-        ["Command", "ExecuteText()", "Execute()", "Set / Get / Delete", "state", "buffer"],
-        [TEAL, YELLOW, ORANGE, GREEN, TEAL, RED],
+        ["Command", "execute(command)", "Set / Get / Delete", "state", "buffer"],
+        [TEAL, ORANGE, GREEN, TEAL, RED],
         Inches(1.40),
     )
-    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(4.52), Inches(3.70))
-    ppt_code_panel(slide, [data["snippets"][1]], Inches(5.30), Inches(2.36), Inches(7.47), Inches(3.70))
+    ppt_code_after_flow(slide, data["snippets"])
     ppt_takeaways(slide, data["takeaways"])
 
 
@@ -380,8 +411,7 @@ def ppt_persistence(slide, data, index):
         [TEAL, YELLOW, ORANGE, RED, GREEN],
         Inches(1.40),
     )
-    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(5.55), Inches(3.70))
-    ppt_code_panel(slide, [data["snippets"][1]], Inches(6.34), Inches(2.36), Inches(6.43), Inches(3.70))
+    ppt_code_after_flow(slide, data["snippets"])
     ppt_takeaways(slide, data["takeaways"])
 
 
@@ -394,8 +424,7 @@ def ppt_bridge(slide, data, index):
         [TEAL, YELLOW, ORANGE, ORANGE, GREEN, TEAL],
         Inches(1.40),
     )
-    ppt_code_panel(slide, [data["snippets"][0]], Inches(0.55), Inches(2.36), Inches(5.05), Inches(3.70))
-    ppt_code_panel(slide, [data["snippets"][1]], Inches(5.84), Inches(2.36), Inches(6.93), Inches(3.70))
+    ppt_code_after_flow(slide, data["snippets"])
     ppt_takeaways(slide, data["takeaways"])
 
 
@@ -544,7 +573,6 @@ def pdf_text(page, text, x, y, width, size, color=TEXT, bold=False, font="Helvet
 def pdf_header(page, data, index):
     pdf_text(page, data["title"], 40, 505, 760, 23, TEXT, True)
     pdf_text(page, data["subtitle"], 42, 474, 760, 10.5, MUTED)
-    pdf_rect(page, 42, 453, 84, 4, ORANGE)
     pdf_text(page, f"{index:02d}", 902, 504, 30, 9, MUTED, True)
 
 
@@ -571,7 +599,17 @@ def pdf_code_panel(page, snippets, x, y, width, height):
 
 
 def pdf_code(page, snippets):
-    pdf_code_panel(page, snippets, 40, 100, 880, 335)
+    line_count = len(code_text(snippets).splitlines())
+    height = min(305, max(165, 66 + line_count * 16))
+    y = 100 + (335 - height) / 2
+    pdf_code_panel(page, snippets, 40, y, 880, height)
+
+
+def pdf_code_after_flow(page, snippets):
+    line_count = len(code_text(snippets).splitlines())
+    height = min(248, max(165, 66 + line_count * 13))
+    y = 98 + (248 - height) / 2
+    pdf_code_panel(page, snippets, 40, y, 880, height)
 
 
 def pdf_stage_flow(page, labels, palette):
@@ -594,11 +632,10 @@ def pdf_engine(page, data, index):
     pdf_header(page, data, index)
     pdf_stage_flow(
         page,
-        ["Command", "ExecuteText()", "Execute()", "Set / Get / Delete", "state", "buffer"],
-        [TEAL, YELLOW, ORANGE, GREEN, TEAL, RED],
+        ["Command", "execute(command)", "Set / Get / Delete", "state", "buffer"],
+        [TEAL, ORANGE, GREEN, TEAL, RED],
     )
-    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 325, 248)
-    pdf_code_panel(page, [data["snippets"][1]], 385, 98, 535, 248)
+    pdf_code_after_flow(page, data["snippets"])
     pdf_takeaways(page, data["takeaways"])
 
 
@@ -606,8 +643,7 @@ def pdf_persistence(page, data, index):
     pdf_rect(page, 0, 0, PDF_W, PDF_H, BG)
     pdf_header(page, data, index)
     pdf_stage_flow(page, ["state", "buffer Go", "AOF", "snapshot", "restore"], [TEAL, YELLOW, ORANGE, RED, GREEN])
-    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 400, 248)
-    pdf_code_panel(page, [data["snippets"][1]], 460, 98, 460, 248)
+    pdf_code_after_flow(page, data["snippets"])
     pdf_takeaways(page, data["takeaways"])
 
 
@@ -619,8 +655,7 @@ def pdf_bridge(page, data, index):
         ["React", "SDK", "postMessage", "Worker", "wasmRedisExecute", "Engine"],
         [TEAL, YELLOW, ORANGE, ORANGE, GREEN, TEAL],
     )
-    pdf_code_panel(page, [data["snippets"][0]], 40, 98, 365, 248)
-    pdf_code_panel(page, [data["snippets"][1]], 425, 98, 495, 248)
+    pdf_code_after_flow(page, data["snippets"])
     pdf_takeaways(page, data["takeaways"])
 
 
@@ -710,7 +745,7 @@ def build_pdf():
 
 
 def build_notes():
-    lines = ["# Notes orales - WasmRedis", "", "Support de 10 slides pour environ 15 minutes.", ""]
+    lines = ["# Notes orales - WasmRedis", "", "Support de 11 slides pour environ 15 minutes.", ""]
     for index, data in enumerate(SLIDES, 1):
         lines.extend([f"## {index}. {data['title']}", data["note"], ""])
         if data.get("snippets"):
@@ -727,11 +762,7 @@ def build_notes():
 def main():
     OUT.mkdir(exist_ok=True)
     build_pptx()
-    build_pdf()
-    build_notes()
     print(f"PPTX: {PPTX_PATH}")
-    print(f"PDF: {PDF_PATH}")
-    print(f"Notes: {NOTES_PATH}")
 
 
 if __name__ == "__main__":
