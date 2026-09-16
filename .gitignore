@@ -17,6 +17,10 @@ web/dist/
 web/*.tsbuildinfo
 .venv-presentation/
 
+# Presentations generees localement
+presentation/*.pptx
+presentation/*.pdf
+
 # GoLand / IntelliJ
 .idea/
 
