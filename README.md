@@ -89,7 +89,9 @@ Pour vider OPFS une seule fois au demarrage :
 http://localhost:5173/?reset=1
 ```
 
-Le seed reste volontairement a 100 entrees par defaut pour les petits PC.
+Le bouton `Seed 100k` ajoute les donnees par lots de 1 000 dans le Web Worker.
+La progression reste visible et le virtual scroll ne monte qu'environ 29 lignes
+dans le DOM, meme quand la base contient 100 000 entrees.
 
 ## Tester
 

@@ -14,12 +14,19 @@ const rowListeners = new Map<string, Set<Listener>>();
 
 export function replaceEntries(nextEntries: StoreEntry[]): void {
   const previousEntries = entries;
-  entries = new Map(nextEntries.map((entry) => [entry.key, entry]));
-  keys = [...entries.keys()].sort((left, right) => left.localeCompare(right));
+  const nextEntriesByKey = new Map<string, StoreEntry>();
+  const nextKeys = new Array<string>(nextEntries.length);
+
+  nextEntries.forEach((entry, index) => {
+    nextEntriesByKey.set(entry.key, entry);
+    nextKeys[index] = entry.key;
+  });
+
+  entries = nextEntriesByKey;
+  keys = nextKeys.sort();
 
   listListeners.forEach((listener) => listener());
-  const changedKeys = new Set([...previousEntries.keys(), ...entries.keys()]);
-  changedKeys.forEach((key) => {
+  rowListeners.forEach((_, key) => {
     const previous = previousEntries.get(key);
     const next = entries.get(key);
     if (previous?.value !== next?.value) {

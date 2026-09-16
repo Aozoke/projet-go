@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearEntries,
+  getEntry,
+  getEntryKeys,
   replaceEntries,
   subscribeEntry,
   subscribeEntryKeys,
@@ -32,5 +34,17 @@ describe("entryStore", () => {
     unsubscribeList();
     unsubscribeA();
     unsubscribeB();
+  });
+
+  it("charge 100 000 entrees sans les monter dans React", () => {
+    const entries = Array.from({ length: 100_000 }, (_, index) => ({
+      key: `demo:${index}`,
+      value: String(index),
+    }));
+
+    replaceEntries(entries);
+
+    expect(getEntryKeys()).toHaveLength(100_000);
+    expect(getEntry("demo:99999")?.value).toBe("99999");
   });
 });

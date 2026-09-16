@@ -18,8 +18,8 @@ type Schema = Record<string, string | number>;
 const rowHeight = readNumberEnv("VITE_WASMREDIS_VIRTUAL_ROW_HEIGHT", 42);
 const overscan = readNumberEnv("VITE_WASMREDIS_VIRTUAL_OVERSCAN", 8);
 const virtualViewportHeight = readNumberEnv("VITE_WASMREDIS_VIRTUAL_VIEWPORT_HEIGHT", 520);
-const demoEntryCount = readNumberEnv("VITE_WASMREDIS_DEMO_ENTRY_COUNT", 100);
-const demoChunkSize = readNumberEnv("VITE_WASMREDIS_DEMO_CHUNK_SIZE", 25);
+const demoEntryCount = readNumberEnv("VITE_WASMREDIS_DEMO_ENTRY_COUNT", 100_000);
+const demoChunkSize = readNumberEnv("VITE_WASMREDIS_DEMO_CHUNK_SIZE", 1_000);
 const benchmarkIterations = readNumberEnv("VITE_WASMREDIS_BENCHMARK_ITERATIONS", 30);
 const scrollBenchmarkDurationMs = readNumberEnv("VITE_WASMREDIS_SCROLL_BENCHMARK_DURATION_MS", 1000);
 
@@ -36,6 +36,7 @@ export function App() {
   const [filterValue, setFilterValue] = useState("");
   const [status, setStatus] = useState("Chargement du moteur...");
   const [benchmarkLines, setBenchmarkLines] = useState<string[]>([]);
+  const [seeding, setSeeding] = useState(false);
 
   const loadEntries = useCallback(async () => {
     const db = dbRef.current;
@@ -129,23 +130,31 @@ export function App() {
 
   const seedDemo = async () => {
     const db = dbRef.current;
-    if (!db) {
+    if (!db || seeding) {
       return;
     }
 
-    setStatus("Creation du jeu de donnees...");
-    for (let start = 0; start < demoEntryCount; start += demoChunkSize) {
-      const end = Math.min(start + demoChunkSize, demoEntryCount);
-      const commands = Array.from({ length: end - start }, (_, offset) =>
-        db.cmd.set(`demo:${start + offset}`, start + offset),
-      );
-      await db.batch(commands);
-      setStatus(`Creation... ${end}/${demoEntryCount}`);
-    }
+    setSeeding(true);
+    try {
+      setStatus(`Creation de ${formatCount(demoEntryCount)} entrees...`);
+      for (let start = 0; start < demoEntryCount; start += demoChunkSize) {
+        const end = Math.min(start + demoChunkSize, demoEntryCount);
+        const commands = Array.from({ length: end - start }, (_, offset) =>
+          db.cmd.set(`demo:${start + offset}`, start + offset),
+        );
+        await db.batch(commands);
+        setStatus(`Creation... ${formatCount(end)}/${formatCount(demoEntryCount)}`);
+      }
 
-    await db.flush();
-    await loadEntries();
-    setStatus("Jeu de donnees pret");
+      setStatus("Persistance et chargement de la liste...");
+      await db.flush();
+      await loadEntries();
+      setStatus(`${formatCount(demoEntryCount)} entrees pretes`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Erreur pendant le seed");
+    } finally {
+      setSeeding(false);
+    }
   };
 
   const runBenchmarkNow = async () => {
@@ -201,10 +210,12 @@ export function App() {
             TTL en secondes
             <input type="number" min="1" value={ttl} onChange={(event) => setTTL(event.target.value)} placeholder="optionnel" />
           </label>
-          <button disabled={!ready || key.trim() === ""} type="submit">Sauver</button>
-          <button disabled={!ready} type="button" onClick={seedDemo}>Seed {formatCount(demoEntryCount)}</button>
-          <button disabled={!ready} type="button" onClick={() => dbRef.current?.flush()}>Flush</button>
-          <button disabled={!ready} type="button" className="danger" onClick={clearDatabase}>Vider</button>
+          <button disabled={!ready || seeding || key.trim() === ""} type="submit">Sauver</button>
+          <button disabled={!ready || seeding} type="button" onClick={seedDemo}>
+            {seeding ? "Seed en cours..." : `Seed ${formatCount(demoEntryCount)}`}
+          </button>
+          <button disabled={!ready || seeding} type="button" onClick={() => dbRef.current?.flush()}>Flush</button>
+          <button disabled={!ready || seeding} type="button" className="danger" onClick={clearDatabase}>Vider</button>
         </form>
       </section>
 
@@ -232,8 +243,8 @@ export function App() {
             <option disabled={filterField === "key"} value="<=">&lt;=</option>
           </select>
           <input value={filterValue} onChange={(event) => setFilterValue(event.target.value)} placeholder="Valeur du filtre" />
-          <button disabled={!ready || filterValue.trim() === ""} type="submit">Filtrer</button>
-          <button disabled={!ready} type="button" onClick={loadEntries}>Tout afficher</button>
+          <button disabled={!ready || seeding || filterValue.trim() === ""} type="submit">Filtrer</button>
+          <button disabled={!ready || seeding} type="button" onClick={loadEntries}>Tout afficher</button>
         </form>
       </section>
 
@@ -247,8 +258,8 @@ export function App() {
         <div className="table-header">
           <strong>{entryKeys.length.toLocaleString("fr-FR")} entrees</strong>
           <div className="table-actions">
-            <button disabled={!ready} type="button" onClick={runBenchmarkNow}>Benchmark</button>
-            <button disabled={!ready} type="button" onClick={loadEntries}>Recharger</button>
+            <button disabled={!ready || seeding} type="button" onClick={runBenchmarkNow}>Benchmark</button>
+            <button disabled={!ready || seeding} type="button" onClick={loadEntries}>Recharger</button>
           </div>
         </div>
         <VirtualList
