@@ -2,6 +2,8 @@ package redis
 
 import "testing"
 
+// TestBTreeRange insere des nombres dans le desordre et cherche ceux >= 20.
+// Avec un degre de 2, le quatrieme ajout force aussi le partage d'une racine pleine.
 func TestBTreeRange(t *testing.T) {
 	tree := NewBTree(2)
 	tree.Insert(BTreeItem{Value: 30, Key: "thirty"})
@@ -15,6 +17,7 @@ func TestBTreeRange(t *testing.T) {
 	}
 }
 
+// TestBTreeAllRangeOperators compare les quatre operateurs autour de la limite 20.
 func TestBTreeAllRangeOperators(t *testing.T) {
 	tree := NewBTree(2)
 	for _, item := range []BTreeItem{
@@ -25,6 +28,7 @@ func TestBTreeAllRangeOperators(t *testing.T) {
 		tree.Insert(item)
 	}
 
+	// Une liste de cas rassemble l'operateur a essayer et les cles attendues.
 	tests := []struct {
 		operator FilterOperator
 		expected []string
@@ -35,6 +39,7 @@ func TestBTreeAllRangeOperators(t *testing.T) {
 		{OperatorLessOrEqual, []string{"ten", "twenty"}},
 	}
 
+	// Pour chaque cas, on verifie d'abord la taille, puis chaque cle dans l'ordre.
 	for _, test := range tests {
 		keys := tree.Range(test.operator, 20)
 		if len(keys) != len(test.expected) {

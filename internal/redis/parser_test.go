@@ -2,6 +2,9 @@ package redis
 
 import "testing"
 
+// Chaque test envoie un texte au parser puis compare la reponse a ce qu'on attend.
+
+// TestReadCommandName verifie que seul le nom GET est extrait, sans la cle name.
 func TestReadCommandName(t *testing.T) {
 	result := ReadCommandName("GET name")
 
@@ -10,6 +13,7 @@ func TestReadCommandName(t *testing.T) {
 	}
 }
 
+// TestReadCommandNameTrimsSpaces verifie que les espaces autour ne changent pas le nom.
 func TestReadCommandNameTrimsSpaces(t *testing.T) {
 	result := ReadCommandName("   GET name   ")
 
@@ -18,6 +22,7 @@ func TestReadCommandNameTrimsSpaces(t *testing.T) {
 	}
 }
 
+// TestReadCommandNameWithEmptyInput attend un nom vide quand aucun texte n'est fourni.
 func TestReadCommandNameWithEmptyInput(t *testing.T) {
 	result := ReadCommandName("")
 
@@ -26,6 +31,7 @@ func TestReadCommandNameWithEmptyInput(t *testing.T) {
 	}
 }
 
+// TestReadCommandNameUppercaseCommand verifie que get devient GET.
 func TestReadCommandNameUppercaseCommand(t *testing.T) {
 	result := ReadCommandName("get name")
 
@@ -34,6 +40,7 @@ func TestReadCommandNameUppercaseCommand(t *testing.T) {
 	}
 }
 
+// TestParseGetCommand attend une commande GET, la cle name et aucune erreur.
 func TestParseGetCommand(t *testing.T) {
 	command, err := ParseCommand("GET name")
 
@@ -50,6 +57,7 @@ func TestParseGetCommand(t *testing.T) {
 	}
 }
 
+// TestParseGetCommandWithoutKey verifie que GET seul est refuse sans faire planter le parser.
 func TestParseGetCommandWithoutKey(t *testing.T) {
 	_, err := ParseCommand("GET")
 
@@ -58,6 +66,7 @@ func TestParseGetCommandWithoutKey(t *testing.T) {
 	}
 }
 
+// TestParseUnknownCommand verifie que PING, non gere par notre moteur, est refuse.
 func TestParseUnknownCommand(t *testing.T) {
 	_, err := ParseCommand("PING name")
 
@@ -66,6 +75,7 @@ func TestParseUnknownCommand(t *testing.T) {
 	}
 }
 
+// TestParseDeleteCommand verifie le type DELETE et la cle name, sans executer de suppression.
 func TestParseDeleteCommand(t *testing.T) {
 	command, err := ParseCommand("DELETE name")
 
@@ -82,6 +92,7 @@ func TestParseDeleteCommand(t *testing.T) {
 	}
 }
 
+// TestParseDeleteCommandWithoutKey attend une erreur si DELETE n'a pas de cle.
 func TestParseDeleteCommandWithoutKey(t *testing.T) {
 	_, err := ParseCommand("DELETE")
 
@@ -90,6 +101,7 @@ func TestParseDeleteCommandWithoutKey(t *testing.T) {
 	}
 }
 
+// TestParseSetCommand verifie SET, la cle name et la valeur matt sans ses guillemets.
 func TestParseSetCommand(t *testing.T) {
 	command, err := ParseCommand(`SET name "matt"`)
 
@@ -110,6 +122,7 @@ func TestParseSetCommand(t *testing.T) {
 	}
 }
 
+// TestParseSetCommandWithoutValue attend une erreur quand SET a une cle mais pas de valeur.
 func TestParseSetCommandWithoutValue(t *testing.T) {
 	_, err := ParseCommand("SET name")
 
@@ -118,6 +131,8 @@ func TestParseSetCommandWithoutValue(t *testing.T) {
 	}
 }
 
+// TestParseSetCommandWithSpacesInValue verifie que les deux mots hello world sont recuperes.
+// Ce cas teste un espace simple, pas la conservation de plusieurs espaces consecutifs.
 func TestParseSetCommandWithSpacesInValue(t *testing.T) {
 	command, err := ParseCommand(`SET message "hello world"`)
 
@@ -130,6 +145,7 @@ func TestParseSetCommandWithSpacesInValue(t *testing.T) {
 	}
 }
 
+// TestParseSetCommandWithoutQuotes attend une erreur si matt n'est pas entre guillemets.
 func TestParseSetCommandWithoutQuotes(t *testing.T) {
 	_, err := ParseCommand("SET name matt")
 
@@ -138,6 +154,7 @@ func TestParseSetCommandWithoutQuotes(t *testing.T) {
 	}
 }
 
+// TestParseAllCommand verifie que ALL donne le type CommandAll sans erreur.
 func TestParseAllCommand(t *testing.T) {
 	command, err := ParseCommand("ALL")
 
@@ -150,6 +167,7 @@ func TestParseAllCommand(t *testing.T) {
 	}
 }
 
+// TestParseEmptyCommand verifie qu'un texte fait uniquement d'espaces est refuse.
 func TestParseEmptyCommand(t *testing.T) {
 	_, err := ParseCommand("   ")
 
@@ -158,6 +176,8 @@ func TestParseEmptyCommand(t *testing.T) {
 	}
 }
 
+// TestParseSetCommandWithTTL verifie que EX 60 remplit TTLSeconds avec le nombre 60.
+// Le parser lit la duree ; ce test n'attend pas une expiration reelle.
 func TestParseSetCommandWithTTL(t *testing.T) {
 	command, err := ParseCommand(`SET session "active" EX 60`)
 	if err != nil {
@@ -169,6 +189,7 @@ func TestParseSetCommandWithTTL(t *testing.T) {
 	}
 }
 
+// TestParseWhereCommand verifie le champ value, l'operateur contains et le texte cherche.
 func TestParseWhereCommand(t *testing.T) {
 	command, err := ParseCommand(`GET WHERE value contains "hello world"`)
 	if err != nil {
@@ -183,6 +204,7 @@ func TestParseWhereCommand(t *testing.T) {
 	}
 }
 
+// TestParseWhereCommandAcceptsSchemaField verifie qu'age peut etre un champ de filtre.
 func TestParseWhereCommandAcceptsSchemaField(t *testing.T) {
 	command, err := ParseCommand("GET WHERE age > 18")
 	if err != nil {
@@ -193,6 +215,8 @@ func TestParseWhereCommandAcceptsSchemaField(t *testing.T) {
 	}
 }
 
+// TestParseSetCommandUnescapesJSON verifie que les \" deviennent des guillemets ordinaires.
+// Le JSON reste du texte pour le moteur ; le parser retire seulement l'echappement du SET.
 func TestParseSetCommandUnescapesJSON(t *testing.T) {
 	command, err := ParseCommand(`SET user "{\"name\":\"matt\"}"`)
 	if err != nil {

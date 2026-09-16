@@ -1,107 +1,95 @@
-// sert à transformer une commande texte en une structure que le moteur Go peut comprendre.
+// Le parser transforme du texte en Command. Il ne lit ni ne modifie la base.
 
 package redis
 
 import (
-	// Permet de créer des messages d'erreur
 	"fmt"
 	"strconv"
 
-	// Permet de manipuler les chaînes de caractères
 	"strings"
 )
 
-// Lit le premier mot de la commande.
+// ReadCommandName lit le premier mot de la commande.
 // Exemple : "get name" devient "GET".
 func ReadCommandName(input string) string {
 
-	// Enlève les espaces inutiles au début et à la fin
 	trimmed := strings.TrimSpace(input)
 
-	// Découpe la commande en plusieurs mots
+	// Fields separe les mots sur les espaces : il ne conserve pas les espaces eux-memes.
 	parts := strings.Fields(trimmed)
 
-	// Si la commande est vide, on renvoie une chaîne vide
 	if len(parts) == 0 {
 		return ""
 	}
 
-	// Retourne le premier mot en majuscules
+	// ToUpper le met en majuscules pour reconnaitre aussi "get" ou "Get".
 	return strings.ToUpper(parts[0])
 }
 
-// Transforme une commande texte en structure Command.
+// ParseCommand transforme une commande texte en structure Command.
 // Si la commande est invalide, une erreur est renvoyée.
 func ParseCommand(input string) (Command, error) {
 
-	// Nettoie puis découpe la commande en plusieurs parties - Le parser récupère le texte et le découpe -
 	parts := strings.Fields(strings.TrimSpace(input))
 
-	// Le parser regarde quel type de commande c’est
 	commandName := ReadCommandName(input)
 
-	// On regarde si c'est SET, GET, DELETE ou ALL.
 	switch CommandType(commandName) {
 
 	// GET accepte soit une cle, soit la forme GET WHERE.
 	case CommandGet:
+		// EqualFold compare WHERE sans tenir compte des majuscules/minuscules.
 		if len(parts) > 1 && strings.EqualFold(parts[1], "WHERE") {
 			return parseWhereCommand(parts)
 		}
 		return parseKeyCommand(CommandGet, parts)
 
-	// DELETE fonctionne de la même manière que GET
+	// DELETE attend une cle, comme le GET simple, mais n'accepte pas WHERE.
 	case CommandDelete:
 		return parseKeyCommand(CommandDelete, parts)
 
-	// SET a besoin d'une clé et d'une valeur
 	case CommandSet:
 		return parseSetCommand(parts)
 
-	// ALL ne prend aucun argument
 	case CommandAll:
 		return parseAllCommand(parts)
 
-	// Si la commande n'existe pas, on renvoie une erreur
 	default:
 		return Command{}, fmt.Errorf("unknown command")
 	}
 }
 
-// Parse les commandes qui prennent seulement une clé.
+// parseKeyCommand analyse les commandes qui prennent seulement une clé.
 // Utilisé pour GET et DELETE.
 func parseKeyCommand(commandType CommandType, parts []string) (Command, error) {
 
-	// Vérifie qu'une clé a bien été donnée
 	if len(parts) < 2 {
 		return Command{}, fmt.Errorf("missing key")
 	}
 
-	// Vérifie qu'il n'y a pas trop d'arguments
 	if len(parts) > 2 {
 		return Command{}, fmt.Errorf("too many arguments")
 	}
 
-	// Création de la commande avec son type et sa clé
 	return Command{
 		Type: commandType,
 		Key:  parts[1],
 	}, nil
 }
 
-// Parse la commande SET
+// parseSetCommand recupere la cle, la valeur entre guillemets et le TTL facultatif.
+// Exemple : SET session "active" EX 60 donne une duree de vie de 60 secondes.
 func parseSetCommand(parts []string) (Command, error) {
 
-	// Vérifie qu'une clé est présente
 	if len(parts) < 2 {
 		return Command{}, fmt.Errorf("missing key")
 	}
 
-	// Vérifie qu'une valeur est présente
 	if len(parts) < 3 {
 		return Command{}, fmt.Errorf("missing value")
 	}
 
+	// Par defaut, toute la fin de la commande appartient a la valeur, sans TTL explicite.
 	valueEnd := len(parts)
 	ttlSeconds := int64(0)
 
@@ -113,24 +101,24 @@ func parseSetCommand(parts []string) (Command, error) {
 		}
 
 		ttlSeconds = parsedTTL
+		// On exclut les deux derniers mots (EX et le nombre) de la valeur.
 		valueEnd -= 2
 	}
 
-	// Regroupe tout ce qui se trouve après la clé et avant EX.
-	// Cela permet d'avoir une valeur avec plusieurs mots
+	// On regroupe la valeur sans la cle ni EX ; les espaces multiples deviennent un seul espace.
 	rawValue := strings.Join(parts[2:valueEnd], " ")
 
-	// Vérifie que la valeur est entourée de guillemets.
 	if !strings.HasPrefix(rawValue, `"`) || !strings.HasSuffix(rawValue, `"`) {
 		return Command{}, fmt.Errorf("value must be quoted")
 	}
 
+	// Unquote enleve les guillemets exterieurs et decode les caracteres echappes,
+	// par exemple \" devient un guillemet dans la valeur. Un texte invalide est refuse.
 	value, err := strconv.Unquote(rawValue)
 	if err != nil {
 		return Command{}, fmt.Errorf("invalid quoted value")
 	}
 
-	// Création de la commande SET
 	return Command{
 		Type: CommandSet,
 		Key:  parts[1],
@@ -140,19 +128,24 @@ func parseSetCommand(parts []string) (Command, error) {
 	}, nil
 }
 
-// Parse une recherche comme : GET WHERE value > 18.
+// parseWhereCommand analyse une recherche comme GET WHERE value > 18.
+// Il prepare le filtre ; c'est le moteur qui cherchera les entrees correspondantes.
 func parseWhereCommand(parts []string) (Command, error) {
+	// Il faut au moins GET, WHERE, le champ, l'operateur et la valeur cherchee.
 	if len(parts) < 5 {
 		return Command{}, fmt.Errorf("GET WHERE needs a field, an operator and a value")
 	}
 
+	// Le champ peut etre key, value ou une cle du schema, comme age.
 	field := FilterField(parts[2])
 
+	// ToLower accepte aussi CONTAINS ; isFilterOperator refuse les operateurs inconnus.
 	operator := FilterOperator(strings.ToLower(parts[3]))
 	if !isFilterOperator(operator) {
 		return Command{}, fmt.Errorf("unknown filter operator")
 	}
 
+	// La valeur cherchee peut contenir plusieurs mots.
 	filterValue, err := parseFilterValue(strings.Join(parts[4:], " "))
 	if err != nil {
 		return Command{}, err
@@ -169,6 +162,8 @@ func parseWhereCommand(parts []string) (Command, error) {
 	}, nil
 }
 
+// parseFilterValue accepte du texte brut (18) ou entre guillemets ("hello world").
+// Si un guillemet ouvre la valeur, Unquote verifie et decode toute la chaine.
 func parseFilterValue(rawValue string) (string, error) {
 	if !strings.HasPrefix(rawValue, `"`) {
 		return rawValue, nil
@@ -181,6 +176,7 @@ func parseFilterValue(rawValue string) (string, error) {
 	return value, nil
 }
 
+// isFilterOperator renvoie true seulement pour les six comparaisons prises en charge.
 func isFilterOperator(operator FilterOperator) bool {
 	switch operator {
 	case OperatorEquals, OperatorContains, OperatorGreaterThan,
@@ -191,14 +187,12 @@ func isFilterOperator(operator FilterOperator) bool {
 	}
 }
 
-// Parse la commande ALL
+// parseAllCommand accepte ALL tout seul, la commande qui demandera toutes les entrees.
 func parseAllCommand(parts []string) (Command, error) {
 
-	// ALL ne doit avoir aucun argument supplémentaire
 	if len(parts) > 1 {
 		return Command{}, fmt.Errorf("too many arguments")
 	}
 
-	// Retourne simplement une commande de type ALL
 	return Command{Type: CommandAll}, nil
 }
